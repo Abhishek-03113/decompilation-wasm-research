@@ -1,8 +1,12 @@
-const hello = "Abhishek";
-const world = "AK";
+// path module
+const path = require("path");
+console.log(path.sep);
 
-const sayHello = (name) => {
-  console.log(`HEllo There ${name}`);
-};
+let path_ = path.join("/home/apex/", "Projects");
 
-module.exports = { hello, world, sayHello };
+console.log(path_);
+
+console.log(path.basename(path_));
+console.log(path.dirname(""));
+
+// http module

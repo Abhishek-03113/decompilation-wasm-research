@@ -14,11 +14,12 @@ let uptime = () => {
 
 const neofetch = {
   host: os.hostname(),
+  user: os.userInfo().username,
   name: os.type(),
   release: os.release(),
   totalmem: os.totalmem() / (1024 * 1024 * 1024),
   freemem: os.freemem() / (1024 * 1024 * 1024),
-  user: os.userInfo().username,
+
   uptime: `${Math.floor(os.uptime() / 3600)} hrs  ${Math.floor((os.uptime() / 60) % 60)} mins`,
 };
 
