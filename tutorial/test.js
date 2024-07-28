@@ -9,4 +9,15 @@ console.log(path_);
 console.log(path.basename(path_));
 console.log(path.dirname(""));
 
+const abs = path.resolve(__dirname, "content", "subfolder");
+console.log(abs);
+
 // http module
+const { readFileSync, writeFileSync } = require("fs");
+const os = require("os");
+
+read = readFileSync("./hello.txt", "utf8");
+
+writeFileSync("./hello.txt", `Here is what we read from the file : ${read}`);
+
+console.log(read);
