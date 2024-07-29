@@ -41,7 +41,7 @@ readFile("new.txt", "utf-8", (err, result) => {
     const second = result;
 
     writeFile(
-      "./async.txt",
+      "./async-result.txt",
       `Here is Result : ${first} ${second}`,
       (err, result) => {
         if (err) {
