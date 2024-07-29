@@ -21,3 +21,15 @@ read = readFileSync("./hello.txt", "utf8");
 writeFileSync("./hello.txt", `Here is what we read from the file : ${read}`);
 
 console.log(read);
+
+// async
+
+const { writeFile, readFile } = require("fs");
+
+readFile("new.txt", "utf-8", (err, result) => {
+  if (err) {
+    console.log(err);
+    return;
+  }
+  console.log(result);
+});
