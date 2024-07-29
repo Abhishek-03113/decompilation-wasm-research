@@ -32,4 +32,15 @@ readFile("new.txt", "utf-8", (err, result) => {
     return;
   }
   console.log(result);
+  const first = result;
+  readFile("./second.txt", "utf", (err, result) => {
+    if (err) {
+      console.log(err);
+      return;
+    }
+    const second = result;
+    writeFile("./async.txt", `Here is the result ${first}, ${second}`, {
+      flag: "a",
+    });
+  });
 });
