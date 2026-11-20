@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 88a67ae..46bf443 100644
+index 88a67ae..0d70b24 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -27,7 +27,10 @@ if(FORCED_CPU)
@@ -90,12 +90,30 @@ index 88a67ae..46bf443 100644
 +		-sWASMFS=1 -sFORCE_FILESYSTEM=1 -sEXIT_RUNTIME=0
 +		-sEXPORTED_RUNTIME_METHODS=FS,ENV,callMain -sINVOKE_RUN=0 -sENVIRONMENT=web,worker
 +		"--preload-file=${CMAKE_BINARY_DIR}/assets@/assets"
-+		$<$<BOOL:${WASM_DEBUG}>:-sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2>)
++		$<$<BOOL:${WASM_DEBUG}>:-sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2 --profiling-funcs>)
 +endif()
 +
  if(TargetBin)
  	if(ANDROID)
  		target_link_libraries(${TargetBin} log EGL OpenSLES)
+diff --git a/Common/GPU/OpenGL/GLRenderManager.cpp b/Common/GPU/OpenGL/GLRenderManager.cpp
+index 4fe040b..d97397a 100644
+--- a/Common/GPU/OpenGL/GLRenderManager.cpp
++++ b/Common/GPU/OpenGL/GLRenderManager.cpp
+@@ -146,6 +146,13 @@ bool GLRenderManager::ThreadFrame() {
+ 		// to keep things uniform.
+ 		{
+ 			std::unique_lock<std::mutex> lock(pushMutex_);
++#ifdef __EMSCRIPTEN__
++			// In a browser this runs on the page's main thread, which must never wait on the emulator
++			// thread (it may itself be waiting for the main thread). The queue is the only state, so
++			// when the rest of the frame isn't queued yet, return and continue on the next animation frame.
++			if (renderThreadQueue_.empty())
++				return true;
++#endif
+ 			pushCondVar_.wait(lock, [this] { return !renderThreadQueue_.empty(); });
+ 			task = renderThreadQueue_.front();
+ 			renderThreadQueue_.pop();
 diff --git a/Common/Input/InputState.cpp b/Common/Input/InputState.cpp
 index 144eaa0..ee14ec7 100644
 --- a/Common/Input/InputState.cpp
@@ -229,10 +247,10 @@ index 061ffdc..8bc90b2 100644
  		renderManager_->ThreadEnd();
  	}
 diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
-index feeae55..8d1140e 100644
+index feeae55..bbaf182 100644
 --- a/SDL/SDLMain.cpp
 +++ b/SDL/SDLMain.cpp
-@@ -1,4 +1,27 @@
+@@ -1,4 +1,39 @@
  
 +#ifdef __EMSCRIPTEN__
 +#include <atomic>
@@ -256,11 +274,23 @@ index feeae55..8d1140e 100644
 +extern "C" EMSCRIPTEN_KEEPALIVE int PPSSPPWeb_OPFSState() {
 +	return g_webOpfsState;
 +}
++
++// Progress counters for the page (debugging stalls): browser frames handled, emulator frames run,
++// and render-thread frames replayed.
++static std::atomic<int> g_webMainFrames{0}, g_webEmuFrames{0}, g_webReplayed{0};
++extern "C" EMSCRIPTEN_KEEPALIVE int PPSSPPWeb_Stat(int which) {
++	switch (which) {
++	case 0: return g_webMainFrames;
++	case 1: return g_webEmuFrames;
++	case 2: return g_webReplayed;
++	default: return -1;
++	}
++}
 +#endif
  #include <cstdlib>
  #include <unistd.h>
  #include <pwd.h>
-@@ -2042,6 +2065,46 @@ void UpdateSDLCursor() {
+@@ -2042,6 +2077,48 @@ void UpdateSDLCursor() {
  #ifdef _WIN32
  #undef main
  #endif
@@ -276,6 +306,7 @@ index feeae55..8d1140e 100644
 +
 +static void WebLoopFrame(void *arg) {
 +	WebLoop *w = (WebLoop *)arg;
++	g_webMainFrames++;
 +	SDL_Event event;
 +	while (SDL_PollEvent(&event)) {
 +		ProcessSDLEvent(w->window, event, &w->tracker);
@@ -295,6 +326,7 @@ index feeae55..8d1140e 100644
 +			emscripten_cancel_main_loop();
 +			return;
 +		}
++		g_webReplayed++;
 +	}
 +
 +	std::lock_guard<std::mutex> guard(g_mutexWindow);
@@ -307,7 +339,19 @@ index feeae55..8d1140e 100644
  int main(int argc, char *argv[]) {
  	TimeInit();
  
-@@ -2518,7 +2581,7 @@ int main(int argc, char *argv[]) {
+@@ -2171,7 +2248,10 @@ int main(int argc, char *argv[]) {
+ 	}
+ 	g_DesktopWidth = displayMode->w;
+ 	g_DesktopHeight = displayMode->h;
+-	g_RefreshRate = displayMode->refresh_rate;
++	// Browsers (and some drivers) report 0 Hz when they don't know. The menu frame limiter divides
++	// by this, and 1/0 turned into a sleep of about 35 minutes.
++	if (displayMode->refresh_rate > 0.0f)
++		g_RefreshRate = displayMode->refresh_rate;
+ 	SDL_free(displayIDs);
+ 
+ 	// TODO: Should only call this if we actually intend to use OpenGL.
+@@ -2518,7 +2598,7 @@ int main(int argc, char *argv[]) {
  		}
  	}
  
@@ -316,7 +360,7 @@ index feeae55..8d1140e 100644
  	// linux SDL_GetPowerInfo asks upower on dbus for power information by default, can cause DrawFPS() in DebugOverlay.cpp to block and affect frame pacing
  	bool stop_battery_poll_thread = false;
  	double last_battery_poll = 0;
-@@ -2576,7 +2639,7 @@ int main(int argc, char *argv[]) {
+@@ -2576,7 +2656,7 @@ int main(int argc, char *argv[]) {
  
  			UpdateTextFocus(window);
  			UpdateSDLCursor();
@@ -325,7 +369,13 @@ index feeae55..8d1140e 100644
  			kick_battery_poll_thread();
  #endif
  
-@@ -2597,6 +2660,12 @@ int main(int argc, char *argv[]) {
+@@ -2594,9 +2674,18 @@ int main(int argc, char *argv[]) {
+ 	} else {
+ 		// OpenGL mode uses this path.
+ 		std::thread emuThread = EmuThread_Start(graphicsContext, new NativeApplication(), [&](GraphicsContext *graphicsContext){
++#ifdef __EMSCRIPTEN__
++			g_webEmuFrames++;
++#endif
  			NativeFrame(graphicsContext);
  			return true;
  		});
@@ -338,7 +388,7 @@ index feeae55..8d1140e 100644
  		while (true) {
  			// OpenGL mode uses this.
  			{
-@@ -2610,7 +2679,7 @@ int main(int argc, char *argv[]) {
+@@ -2610,7 +2699,7 @@ int main(int argc, char *argv[]) {
  
  			UpdateTextFocus(window);
  			UpdateSDLCursor();
@@ -347,7 +397,7 @@ index feeae55..8d1140e 100644
  			kick_battery_poll_thread();
  #endif
  
-@@ -2638,7 +2707,7 @@ int main(int argc, char *argv[]) {
+@@ -2638,7 +2727,7 @@ int main(int argc, char *argv[]) {
  		EmuThread_Join(graphicsContext, emuThread);
  	}
  
