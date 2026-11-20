@@ -25,7 +25,7 @@ function runChecks() {
   const canvas = document.createElement('canvas')
   const checks = [
     ['Cross-origin isolated (threads)', window.crossOriginIsolated === true,
-      'Serve the page with the COOP/COEP headers (npm start does this).'],
+      'Serve the page with the COOP/COEP headers (bun start does this).'],
     ['SharedArrayBuffer', typeof SharedArrayBuffer === 'function', 'Needs cross-origin isolation.'],
     ['WebGL 2', !!canvas.getContext('webgl2'), 'Turn on hardware acceleration in the browser.'],
     ['Private file storage (OPFS)', !!(navigator.storage && navigator.storage.getDirectory),
