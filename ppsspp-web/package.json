@@ -1,0 +1,15 @@
+{
+  "name": "ppsspp-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PPSSPP compiled to WebAssembly, served with the headers browsers need for threads.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "sh build.sh"
+  },
+  "license": "GPL-2.0-or-later",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

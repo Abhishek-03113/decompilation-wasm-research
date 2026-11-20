@@ -1,0 +1,60 @@
+diff --git a/client/sock_impl_linux.c b/client/sock_impl_linux.c
+index c1071a2..ed1dafd 100644
+--- a/client/sock_impl_linux.c
++++ b/client/sock_impl_linux.c
+@@ -155,7 +155,7 @@ int native_connect_tcp_sock(const struct aemu_postoffice_sock_addr *addr4, const
+ 	setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sockopt, sizeof(sockopt));
+ 	setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &sockopt, sizeof(sockopt));
+ 
+-	#ifndef __linux__
++	#if !defined(__linux__) && defined(SO_NOSIGPIPE)
+ 	sockopt = 1;
+ 	setsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &sockopt, sizeof(sockopt));
+ 	#endif
+@@ -177,7 +177,7 @@ int native_connect_tcp_sock(const struct aemu_postoffice_sock_addr *addr4, const
+ 	get_ret = getsockopt(sock, SOL_SOCKET, SO_RCVBUF, &sockopt, &opt_len);
+ 	LOG("%s: SO_RCVBUF is %d (0x%x)\n", __func__, sockopt, get_ret == -1 ? errno : 0);
+ 
+-	#ifndef __linux__
++	#if !defined(__linux__) && defined(SO_NOSIGPIPE)
+ 	opt_len = sizeof(sockopt);
+ 	sockopt = 0;
+ 	get_ret = getsockopt(sock, SOL_SOCKET, SO_NOSIGPIPE, &sockopt, &opt_len);
+diff --git a/server_cpp/common.cpp b/server_cpp/common.cpp
+index abe37ab..6ff1cdc 100644
+--- a/server_cpp/common.cpp
++++ b/server_cpp/common.cpp
+@@ -21,7 +21,7 @@ std::string mac_bytes_to_mac_string(std::string mac){
+ }
+ 
+ void set_thread_name(std::string name){
+-	#if __unix__
++	#if __unix__ && !defined(__EMSCRIPTEN__)
+ 	pthread_t tid = pthread_self();
+ 	pthread_setname_np(tid, name.c_str());
+ 	#else
+diff --git a/server_cpp/native_socket_linux.cpp b/server_cpp/native_socket_linux.cpp
+index d20f717..ebeb2e1 100644
+--- a/server_cpp/native_socket_linux.cpp
++++ b/server_cpp/native_socket_linux.cpp
+@@ -163,7 +163,7 @@ int native_accept(int sock_fd, std::string *peer_addr, uint16_t *peer_port){
+ 	setsockopt(accept_result, SOL_SOCKET, SO_SNDBUF, &sockopt, sizeof(sockopt));
+ 	setsockopt(accept_result, SOL_SOCKET, SO_RCVBUF, &sockopt, sizeof(sockopt));
+ 
+-	#ifndef __linux__
++	#if !defined(__linux__) && defined(SO_NOSIGPIPE)
+ 	sockopt = 1;
+ 	setsockopt(accept_result, SOL_SOCKET, SO_NOSIGPIPE, &sockopt, sizeof(sockopt));
+ 	#endif
+diff --git a/server_cpp/server.cpp b/server_cpp/server.cpp
+index 0b75454..b397d6d 100644
+--- a/server_cpp/server.cpp
++++ b/server_cpp/server.cpp
+@@ -5,6 +5,7 @@
+ #endif
+ 
+ #include <stdio.h>
++#include <stdlib.h>
+ 
+ #include "server.h"
+ #include "log.h"

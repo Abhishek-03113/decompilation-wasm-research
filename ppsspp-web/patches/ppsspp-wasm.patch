@@ -1,0 +1,423 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 88a67ae..46bf443 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -27,7 +27,10 @@ if(FORCED_CPU)
+ endif()
+ 
+ # Detect CPU from CMAKE configuration. Toolchains should set this up
+-if(CMAKE_SYSTEM_PROCESSOR)
++if(EMSCRIPTEN)
++	# WebAssembly. Emscripten reports the processor as "x86"; treat it as its own architecture.
++	set(WASM ON)
++elseif(CMAKE_SYSTEM_PROCESSOR)
+ 	if(CMAKE_OSX_ARCHITECTURES)
+ 		if("${CMAKE_OSX_ARCHITECTURES}" MATCHES ".*86.*")
+ 			set(X86_DEVICE ON)
+@@ -115,7 +118,12 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
+ include(CheckCXXSourceCompiles)
+ include(GNUInstallDirs)
+ 
+-add_compile_definitions(ASSETS_DIR="${CMAKE_INSTALL_FULL_DATADIR}/ppsspp/assets/")
++if(EMSCRIPTEN)
++	# Preloaded into the virtual file system at this path (see the PPSSPPSDL link options).
++	add_compile_definitions(ASSETS_DIR="/assets/")
++else()
++	add_compile_definitions(ASSETS_DIR="${CMAKE_INSTALL_FULL_DATADIR}/ppsspp/assets/")
++endif()
+ 
+ if(OPENXR AND NOT ARMV7_DEVICE)
+ 	add_compile_definitions(OPENXR)
+@@ -357,7 +365,16 @@ set(SDL_LIB_TARGET "")
+ set(SDL_TTF_LIB_TARGET "")
+ set(FONTCONFIG_LIB_TARGET "")
+ 
+-if(NOT LIBRETRO AND NOT IOS AND NOT HEADLESS_CROSS AND NOT ANDROID)
++if(EMSCRIPTEN AND NOT HEADLESS_CROSS)
++	# Emscripten's own SDL3 and SDL3_ttf ports (built on first use).
++	add_library(SDL3::SDL3 INTERFACE IMPORTED)
++	set_target_properties(SDL3::SDL3 PROPERTIES INTERFACE_COMPILE_OPTIONS "--use-port=sdl3" INTERFACE_LINK_OPTIONS "--use-port=sdl3")
++	# Shared code includes SDL headers without linking SDL, so every file gets the port's flags.
++	add_compile_options(--use-port=sdl3)
++	set(SDL_LIB_TARGET SDL3::SDL3)
++	# No SDL3_ttf yet: PPSSPP falls back to its built-in font atlas for UI text.
++	message(STATUS "Using Emscripten SDL3 port")
++elseif(NOT LIBRETRO AND NOT IOS AND NOT HEADLESS_CROSS AND NOT ANDROID)
+ 	find_package(SDL3 QUIET)
+ 	if(NOT SDL3_FOUND)
+ 		if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND (EXISTS "/usr/bin/apt" OR EXISTS "/usr/bin/apt-get" OR EXISTS "/etc/debian_version"))
+@@ -464,6 +481,14 @@ if(ARM64)
+ 	message("Generating for ARMv8, ${CMAKE_BUILD_TYPE}")
+ endif()
+ 
++if(EMSCRIPTEN)
++	message("Generating for WebAssembly, ${CMAKE_BUILD_TYPE}")
++	# SSE intrinsics stay off for now (portable C++ paths); -msimd128 still lets clang auto-vectorize.
++	add_compile_options(-msimd128 -pthread)
++	add_compile_definitions(NO_MMAP)
++	add_link_options(-pthread)
++endif()
++
+ if(NOT MSVC)
+ 	# NEON optimizations in libpng17 seem to cause PNG load errors, see #14485.
+ 	add_compile_definitions(PNG_ARM_NEON_OPT=0)
+@@ -1372,6 +1397,14 @@ if(HEADLESS)
+ 	if(WIN32)
+ 		target_link_libraries(PPSSPPHeadless d2d1 dwrite d3d11)
+ 	endif()
++	if(EMSCRIPTEN)
++		# Headless runs under Node.js with direct access to the real file system (for tests).
++		target_link_options(PPSSPPHeadless PRIVATE
++			-sENVIRONMENT=node -sNODERAWFS=1 -sPROXY_TO_PTHREAD=1 -sEXIT_RUNTIME=1
++			-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=2GB
++			-sSTACK_SIZE=8MB -sDEFAULT_PTHREAD_STACK_SIZE=4MB -sPTHREAD_POOL_SIZE=8
++			$<$<BOOL:${WASM_DEBUG}>:-sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2>)
++	endif()
+ 	setup_target_project(PPSSPPHeadless headless)
+ endif()
+ 
+@@ -1551,6 +1584,19 @@ if(TargetBin)
+ 	endif()
+ endif()
+ 
++if(TargetBin AND EMSCRIPTEN)
++	# Browser build: WebGL2 on the page's main thread, emulation on pthreads.
++	set_target_properties(${TargetBin} PROPERTIES SUFFIX ".js")
++	target_link_options(${TargetBin} PRIVATE
++		-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1
++		-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=512MB -sMAXIMUM_MEMORY=2GB
++		-sSTACK_SIZE=8MB -sDEFAULT_PTHREAD_STACK_SIZE=4MB -sPTHREAD_POOL_SIZE=16
++		-sWASMFS=1 -sFORCE_FILESYSTEM=1 -sEXIT_RUNTIME=0
++		-sEXPORTED_RUNTIME_METHODS=FS,ENV,callMain -sINVOKE_RUN=0 -sENVIRONMENT=web,worker
++		"--preload-file=${CMAKE_BINARY_DIR}/assets@/assets"
++		$<$<BOOL:${WASM_DEBUG}>:-sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2>)
++endif()
++
+ if(TargetBin)
+ 	if(ANDROID)
+ 		target_link_libraries(${TargetBin} log EGL OpenSLES)
+diff --git a/Common/Input/InputState.cpp b/Common/Input/InputState.cpp
+index 144eaa0..ee14ec7 100644
+--- a/Common/Input/InputState.cpp
++++ b/Common/Input/InputState.cpp
+@@ -1,4 +1,5 @@
+ #include <vector>
++#include <cstdlib>
+ #include <cstdio>
+ 
+ #include "Common/Input/InputState.h"
+diff --git a/Common/MemArenaPosix.cpp b/Common/MemArenaPosix.cpp
+index 8db293a..0a3ac5d 100644
+--- a/Common/MemArenaPosix.cpp
++++ b/Common/MemArenaPosix.cpp
+@@ -16,6 +16,7 @@
+ // http://code.google.com/p/dolphin-emu/
+ 
+ #include "ppsspp_config.h"
++#include <cstdlib>
+ 
+ #if !defined(_WIN32) && !defined(ANDROID) && !defined(__APPLE__) && !PPSSPP_PLATFORM(SWITCH)
+ 
+@@ -174,8 +175,17 @@ u8* MemArena::Find4GBBase() {
+ 		return hardcoded_ptr;
+ 	}
+ #elif defined(NO_MMAP)
+-    void* base = std::malloc(0x0A000000);
+-    return static_cast<u8*>(base);
++	// Must cover everything MEMVIEW32_MASK (0x0FFFFFFF on 32-bit) can reach: the views go at
++	// base + (address & mask), and 64 MB of Slim RAM alone ends at 0x0C000000. A smaller block lets
++	// PSP addresses past its end write into the host heap.
++	// Allocated once and reused: nothing releases it, and a new 256 MB block per boot would
++	// exhaust a 32-bit address space after a few games or tests.
++	static void *base = nullptr;
++	if (!base)
++		base = std::malloc(0x10000000);
++	if (base)
++		memset(base, 0, 0x10000000);
++	return static_cast<u8*>(base);
+ #else
+ 	// Keep the range reserved and map the views over it, so nothing else can be allocated in the gaps
+ 	// between them, or where a view is about to go (see MemArenaAndroid.cpp).
+diff --git a/Common/TimeUtil.cpp b/Common/TimeUtil.cpp
+index f47de58..4781c43 100644
+--- a/Common/TimeUtil.cpp
++++ b/Common/TimeUtil.cpp
+@@ -300,8 +300,6 @@ void sleep_ms(int ms, const char *reason) {
+ 	Sleep(ms);
+ #elif PPSSPP_PLATFORM(SWITCH)
+ 	svcSleepThread(ms * 1000000);
+-#elif defined(__EMSCRIPTEN__)
+-	emscripten_sleep(ms);
+ #else
+ 	usleep(ms * 1000);
+ #endif
+@@ -320,8 +318,6 @@ void sleep_us(int us, const char *reason) {
+ 	Sleep(us / 1000);
+ #elif defined(HAVE_LIBNX)
+ 	svcSleepThread(us * 1000);
+-#elif defined(__EMSCRIPTEN__)
+-	emscripten_sleep(us / 1000);
+ #else
+ 	usleep(us);
+ #endif
+@@ -380,8 +376,6 @@ void sleep_precise(double seconds, const char *reason) {
+ 	// On other platforms, we just do a conversion with more input precision than in sleep_ms which is restricted to whole milliseconds.
+ #elif defined(HAVE_LIBNX)
+ 	svcSleepThread((int64_t)(seconds * 1000000000.0));
+-#elif defined(__EMSCRIPTEN__)
+-	emscripten_sleep(seconds * 1000.0);
+ #else
+ 	usleep(seconds * 1000000.0);
+ #endif
+@@ -409,8 +403,6 @@ void sleep_approx(double seconds, const char *reason) {
+ 	Sleep(std::max(1, (int)(seconds * 1000.0 + 0.5)));
+ #elif defined(HAVE_LIBNX)
+ 	svcSleepThread((int64_t)(seconds * 1000000000.0));
+-#elif defined(__EMSCRIPTEN__)
+-	emscripten_sleep(seconds * 1000.0);
+ #else
+ 	usleep(seconds * 1000000.0);
+ #endif
+diff --git a/Core/FileLoaders/RamCachingFileLoader.cpp b/Core/FileLoaders/RamCachingFileLoader.cpp
+index c50255e..deaec26 100644
+--- a/Core/FileLoaders/RamCachingFileLoader.cpp
++++ b/Core/FileLoaders/RamCachingFileLoader.cpp
+@@ -16,6 +16,7 @@
+ // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
+ 
+ #include <algorithm>
++#include <cstdlib>
+ #include <thread>
+ #include <cstring>
+ 
+diff --git a/Core/Util/PathUtil.cpp b/Core/Util/PathUtil.cpp
+index caa91ba..974aa8e 100644
+--- a/Core/Util/PathUtil.cpp
++++ b/Core/Util/PathUtil.cpp
+@@ -1,4 +1,5 @@
+ #include <algorithm>
++#include <cstdlib>
+ #include <string_view>
+ 
+ #include "Common/File/Path.h"
+diff --git a/GPU/Common/VertexDecoderCommon.h b/GPU/Common/VertexDecoderCommon.h
+index a14f9c6..724dff0 100644
+--- a/GPU/Common/VertexDecoderCommon.h
++++ b/GPU/Common/VertexDecoderCommon.h
+@@ -471,6 +471,7 @@ class VertexDecoderJitCache {
+ 		return nullptr;
+ 	}
+ 	void Clear() {}
++	size_t GetSpaceLeft() const { return 0; }
+ 	bool IsInSpace(const u8 *ptr) const { return false; }
+ };
+ #endif
+diff --git a/SDL/SDLGLGraphicsContext.h b/SDL/SDLGLGraphicsContext.h
+index 061ffdc..8bc90b2 100644
+--- a/SDL/SDLGLGraphicsContext.h
++++ b/SDL/SDLGLGraphicsContext.h
+@@ -35,6 +35,11 @@ class SDLGLGraphicsContext : public GraphicsContext {
+ 		return renderManager_->ThreadFrame();
+ 	}
+ 
++	// True when the emulator has queued render work, so ThreadFrame() won't block on an empty queue.
++	bool HasQueuedThreadWork() {
++		return renderManager_->HasQueuedThreadWork();
++	}
++
+ 	void ThreadEnd() override {
+ 		renderManager_->ThreadEnd();
+ 	}
+diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
+index feeae55..8d1140e 100644
+--- a/SDL/SDLMain.cpp
++++ b/SDL/SDLMain.cpp
+@@ -1,4 +1,27 @@
+ 
++#ifdef __EMSCRIPTEN__
++#include <atomic>
++#include <thread>
++#include <emscripten.h>
++#include <emscripten/wasmfs.h>
++
++// The page mounts the browser's Origin Private File System at /opfs before calling main(), so
++// game files and the memory stick (saves, settings) persist. Creating the backend waits on the
++// main thread's event loop, so it runs on a helper thread and the page polls for the result.
++static std::atomic<int> g_webOpfsState{0};  // 0 = pending, 1 = mounted, -1 = failed
++
++extern "C" EMSCRIPTEN_KEEPALIVE void PPSSPPWeb_MountOPFS() {
++	std::thread([] {
++		backend_t backend = wasmfs_create_opfs_backend();
++		int result = backend ? wasmfs_create_directory("/opfs", 0777, backend) : -1;
++		g_webOpfsState = result == 0 ? 1 : -1;
++	}).detach();
++}
++
++extern "C" EMSCRIPTEN_KEEPALIVE int PPSSPPWeb_OPFSState() {
++	return g_webOpfsState;
++}
++#endif
+ #include <cstdlib>
+ #include <unistd.h>
+ #include <pwd.h>
+@@ -2042,6 +2065,46 @@ void UpdateSDLCursor() {
+ #ifdef _WIN32
+ #undef main
+ #endif
++#ifdef __EMSCRIPTEN__
++// Browsers can't run a blocking loop on the main thread. The emulator runs on its own pthread
++// (EmuThread) and records GL commands; once per animation frame, the page's main thread handles
++// input and replays whatever the emulator has queued with WebGL2, then returns to the browser.
++struct WebLoop {
++	SDL_Window *window;
++	SDLGLGraphicsContext *gl;
++	InputStateTracker tracker{};
++};
++
++static void WebLoopFrame(void *arg) {
++	WebLoop *w = (WebLoop *)arg;
++	SDL_Event event;
++	while (SDL_PollEvent(&event)) {
++		ProcessSDLEvent(w->window, event, &w->tracker);
++	}
++	if (g_QuitRequested || g_RestartRequested) {
++		emscripten_cancel_main_loop();
++		return;
++	}
++	UpdateTextFocus(w->window);
++	UpdateSDLCursor();
++	w->tracker.MouseCaptureControl(w->window);
++
++	// Replay the frames the emulator has finished, but never wait on an empty queue: that would
++	// freeze the page. A partly queued frame completes inside ThreadFrame.
++	for (int i = 0; i < 3 && w->gl->HasQueuedThreadWork(); i++) {
++		if (!w->gl->ThreadFrame()) {
++			emscripten_cancel_main_loop();
++			return;
++		}
++	}
++
++	std::lock_guard<std::mutex> guard(g_mutexWindow);
++	if (g_windowState.update) {
++		UpdateWindowState(w->window);
++	}
++}
++#endif
++
+ int main(int argc, char *argv[]) {
+ 	TimeInit();
+ 
+@@ -2518,7 +2581,7 @@ int main(int argc, char *argv[]) {
+ 		}
+ 	}
+ 
+-#if !PPSSPP_PLATFORM(MAC)
++#if !PPSSPP_PLATFORM(MAC) && !defined(__EMSCRIPTEN__)
+ 	// linux SDL_GetPowerInfo asks upower on dbus for power information by default, can cause DrawFPS() in DebugOverlay.cpp to block and affect frame pacing
+ 	bool stop_battery_poll_thread = false;
+ 	double last_battery_poll = 0;
+@@ -2576,7 +2639,7 @@ int main(int argc, char *argv[]) {
+ 
+ 			UpdateTextFocus(window);
+ 			UpdateSDLCursor();
+-#if !PPSSPP_PLATFORM(MAC)
++#if !PPSSPP_PLATFORM(MAC) && !defined(__EMSCRIPTEN__)
+ 			kick_battery_poll_thread();
+ #endif
+ 
+@@ -2597,6 +2660,12 @@ int main(int argc, char *argv[]) {
+ 			NativeFrame(graphicsContext);
+ 			return true;
+ 		});
++#ifdef __EMSCRIPTEN__
++		// Never returns: the browser calls WebLoopFrame once per animation frame from here on.
++		// Everything it uses lives on the heap, since this unwinds main()'s stack.
++		WebLoop *webLoop = new WebLoop{window, (SDLGLGraphicsContext *)graphicsContext};
++		emscripten_set_main_loop_arg(WebLoopFrame, webLoop, 0, true);
++#endif
+ 		while (true) {
+ 			// OpenGL mode uses this.
+ 			{
+@@ -2610,7 +2679,7 @@ int main(int argc, char *argv[]) {
+ 
+ 			UpdateTextFocus(window);
+ 			UpdateSDLCursor();
+-#if !PPSSPP_PLATFORM(MAC)
++#if !PPSSPP_PLATFORM(MAC) && !defined(__EMSCRIPTEN__)
+ 			kick_battery_poll_thread();
+ #endif
+ 
+@@ -2638,7 +2707,7 @@ int main(int argc, char *argv[]) {
+ 		EmuThread_Join(graphicsContext, emuThread);
+ 	}
+ 
+-#if !PPSSPP_PLATFORM(MAC)
++#if !PPSSPP_PLATFORM(MAC) && !defined(__EMSCRIPTEN__)
+ 	stop_battery_poll_thread = true;
+ 	SDL_SignalSemaphore(battery_poll_thread_sema);
+ 	battery_poll_thread.join();
+diff --git a/ext/CMakeLists.txt b/ext/CMakeLists.txt
+index 39f943e..7ebc22c 100644
+--- a/ext/CMakeLists.txt
++++ b/ext/CMakeLists.txt
+@@ -1,6 +1,6 @@
+ set(ARMIPS_REGEXP OFF CACHE BOOL "" FORCE)
+ set(ARMIPS_LIBRARY_ONLY ON CACHE BOOL "" FORCE)
+-if(WIN32)
++if(WIN32 OR EMSCRIPTEN)
+ 	set(ARMIPS_USE_STD_FILESYSTEM ON CACHE BOOL "" FORCE)
+ endif()
+ 
+@@ -90,7 +90,7 @@ if(WIN32)
+ 	)
+ endif()
+ 
+-if(LINUX OR ANDROID OR MACOSX OR IOS OR BSD)
++if(LINUX OR ANDROID OR MACOSX OR IOS OR BSD OR EMSCRIPTEN)
+ 	list(APPEND aemu_postoffice_client_obj
+ 		aemu_postoffice/client/sock_impl_linux.c
+ 	)
+@@ -116,7 +116,7 @@ if(WIN32)
+ 	)
+ endif()
+ 
+-if(LINUX OR ANDROID OR MACOSX OR IOS OR BSD)
++if(LINUX OR ANDROID OR MACOSX OR IOS OR BSD OR EMSCRIPTEN)
+ 	list(APPEND aemu_postoffice_server_obj
+ 		aemu_postoffice/server_cpp/native_socket_linux.cpp
+ 	)
+diff --git a/headless/Headless.cpp b/headless/Headless.cpp
+index cc9ba43..d968fd2 100644
+--- a/headless/Headless.cpp
++++ b/headless/Headless.cpp
+@@ -300,7 +300,8 @@ float System_GetPropertyFloat(SystemProperty prop) { return -1.0f; }
+ bool System_GetPropertyBool(SystemProperty prop) {
+ 	switch (prop) {
+ 	case SYSPROP_IS_HEADLESS: return true;
+-#if PPSSPP_PLATFORM(IOS)
++#if PPSSPP_PLATFORM(IOS) || defined(__EMSCRIPTEN__)
++	// iOS: not without a debugger attached. WebAssembly: no native JIT.
+ 	// Not without a debugger attached, which a devicectl launch doesn't have.
+ 	case SYSPROP_CAN_JIT: return false;
+ #else
+diff --git a/ppsspp_config.h b/ppsspp_config.h
+index 61b733c..8ffd948 100644
+--- a/ppsspp_config.h
++++ b/ppsspp_config.h
+@@ -8,7 +8,15 @@
+ #define PPSSPP_API(PPSSPP_FEATURE) (PPSSPP_API_##PPSSPP_FEATURE)
+ 
+ // ARCH defines
+-#if defined(_M_IX86) || defined(__i386__) || defined (__EMSCRIPTEN__)
++#if defined(__EMSCRIPTEN__)
++    // WebAssembly: no native JIT. SSE intrinsics are translated to Wasm SIMD by Emscripten
++    // when building with -msimd128 -msse4.1.
++    #define PPSSPP_ARCH_WASM32 1
++    #define PPSSPP_ARCH_32BIT 1
++    #if defined(__SSE2__)
++        #define PPSSPP_ARCH_SSE2 1
++    #endif
++#elif defined(_M_IX86) || defined(__i386__)
+     #define PPSSPP_ARCH_X86 1
+     #define PPSSPP_ARCH_32BIT 1
+     #define PPSSPP_ARCH_SSE2 1

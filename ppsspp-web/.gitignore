@@ -1,0 +1,7 @@
+node_modules/
+# Build output from build.sh (PPSSPPSDL.js / .wasm / .data and the worker scripts).
+public/build/
+# Never commit game files.
+*.iso
+*.cso
+*.chd

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPSSPP Web</title>
+<style>
+  :root {
+    --bg: #0e1318; --panel: #161d24; --line: #26313c; --fg: #e4eaf0; --muted: #93a3b1;
+    --accent: #5fb4e0; --bad: #f08a80; --ok: #7fd3a0;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--sans); }
+  #launcher { max-width: 720px; margin: 0 auto; padding: 40px 16px; display: grid; gap: 20px; }
+  h1 { margin: 0; font-size: 1.8rem; }
+  p { margin: 0; }
+  .muted { color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 12px; }
+  .panel h2 { margin: 0; font-size: 1rem; }
+  button, .file { font: 600 14px var(--sans); padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1218; }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, .file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .file input { display: none; }
+  ul.games { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+  ul.games li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
+  ul.games .name { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 13px; }
+  ul.games .size { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  progress { width: 100%; height: 10px; }
+  .checks { display: grid; gap: 4px; font-family: var(--mono); font-size: 13px; }
+  .checks .ok { color: var(--ok); } .checks .bad { color: var(--bad); }
+  table { border-collapse: collapse; font-size: 13px; }
+  td { padding: 3px 12px 3px 0; } td:first-child { font-family: var(--mono); color: var(--accent); }
+  #log { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; max-height: 180px; overflow: auto; color: var(--muted); }
+  #stage { position: fixed; inset: 0; background: #000; display: none; }
+  #stage.on { display: block; }
+  #canvas { width: 100%; height: 100%; display: block; }
+  #hud { position: fixed; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 2; }
+  #hud button { padding: 5px 10px; font-size: 12px; opacity: .75; }
+</style>
+</head>
+<body>
+<main id="launcher">
+  <div>
+    <h1>PPSSPP Web</h1>
+    <p class="muted">The PPSSPP PSP emulator, compiled to WebAssembly. Load your own game dump (ISO, CSO or CHD); it is copied into this browser's private storage once and never leaves your computer.</p>
+  </div>
+
+  <section class="panel" aria-labelledby="h-checks">
+    <h2 id="h-checks">Browser check</h2>
+    <div class="checks" id="checks"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-games">
+    <h2 id="h-games">Your games</h2>
+    <ul class="games" id="games"><li class="muted">Loading…</li></ul>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <label class="file">Add game file…<input type="file" id="pick" accept=".iso,.cso,.chd,.pbp,.elf,.prx,.zip"></label>
+      <button id="menu" type="button">Open PPSSPP menu</button>
+    </div>
+    <div id="importing" hidden>
+      <p id="import-label" class="muted"></p>
+      <progress id="import-bar" max="1" value="0"></progress>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-keys">
+    <h2 id="h-keys">Default keyboard controls</h2>
+    <table>
+      <tr><td>Arrow keys</td><td>D-pad</td></tr>
+      <tr><td>I J K L</td><td>Analog stick</td></tr>
+      <tr><td>S X Z A</td><td>Circle, Cross, Square, Triangle (PPSSPP's defaults; remap in Settings → Controls)</td></tr>
+      <tr><td>Q / W</td><td>L / R</td></tr>
+      <tr><td>Space / Enter</td><td>Start, Select: check Settings → Controls</td></tr>
+      <tr><td>Esc</td><td>PPSSPP pause menu</td></tr>
+    </table>
+    <p class="muted">Gamepads work through the browser's Gamepad API: press a button on the pad once so the browser exposes it.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="h-log">
+    <h2 id="h-log">Log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<div id="stage">
+  <div id="hud">
+    <button id="fs" type="button">Fullscreen</button>
+    <button id="reload" type="button">Back to launcher</button>
+  </div>
+  <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+</div>
+
+<script src="ppsspp-web.js"></script>
+</body>
+</html>
