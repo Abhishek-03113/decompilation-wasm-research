@@ -325,7 +325,7 @@ index 1dee449..2f82898 100644
  		return NKCODE_BUTTON_10;
  	case SDL_GAMEPAD_BUTTON_BACK:
 diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
-index feeae55..14f438f 100644
+index feeae55..526b090 100644
 --- a/SDL/SDLMain.cpp
 +++ b/SDL/SDLMain.cpp
 @@ -1,4 +1,41 @@
@@ -382,7 +382,19 @@ index feeae55..14f438f 100644
  	SDL_AudioSpec fmt{};
  	fmt.freq = g_sampleRate;
  	fmt.format = SDL_AUDIO_S16;
-@@ -2042,6 +2084,125 @@ void UpdateSDLCursor() {
+@@ -1351,7 +1393,11 @@ bool System_GetPropertyBool(SystemProperty prop) {
+ 		return false;
+ #endif
+ 	case SYSPROP_CAN_JIT:
++#ifdef __EMSCRIPTEN__
++		return false;  // WebAssembly can't run generated machine code: IR interpreter only.
++#else
+ 		return true;
++#endif
+ 	case SYSPROP_SUPPORTS_OPEN_FILE_IN_EDITOR:
+ 		return true;  // FileUtil.cpp: OpenFileInEditor
+ #ifndef HTTPS_NOT_AVAILABLE
+@@ -2042,6 +2088,125 @@ void UpdateSDLCursor() {
  #ifdef _WIN32
  #undef main
  #endif
@@ -508,7 +520,7 @@ index feeae55..14f438f 100644
  int main(int argc, char *argv[]) {
  	TimeInit();
  
-@@ -2171,7 +2332,10 @@ int main(int argc, char *argv[]) {
+@@ -2171,7 +2336,10 @@ int main(int argc, char *argv[]) {
  	}
  	g_DesktopWidth = displayMode->w;
  	g_DesktopHeight = displayMode->h;
@@ -520,7 +532,7 @@ index feeae55..14f438f 100644
  	SDL_free(displayIDs);
  
  	// TODO: Should only call this if we actually intend to use OpenGL.
-@@ -2518,7 +2682,7 @@ int main(int argc, char *argv[]) {
+@@ -2518,7 +2686,7 @@ int main(int argc, char *argv[]) {
  		}
  	}
  
@@ -529,7 +541,7 @@ index feeae55..14f438f 100644
  	// linux SDL_GetPowerInfo asks upower on dbus for power information by default, can cause DrawFPS() in DebugOverlay.cpp to block and affect frame pacing
  	bool stop_battery_poll_thread = false;
  	double last_battery_poll = 0;
-@@ -2576,7 +2740,7 @@ int main(int argc, char *argv[]) {
+@@ -2576,7 +2744,7 @@ int main(int argc, char *argv[]) {
  
  			UpdateTextFocus(window);
  			UpdateSDLCursor();
@@ -538,7 +550,7 @@ index feeae55..14f438f 100644
  			kick_battery_poll_thread();
  #endif
  
-@@ -2594,9 +2758,18 @@ int main(int argc, char *argv[]) {
+@@ -2594,9 +2762,18 @@ int main(int argc, char *argv[]) {
  	} else {
  		// OpenGL mode uses this path.
  		std::thread emuThread = EmuThread_Start(graphicsContext, new NativeApplication(), [&](GraphicsContext *graphicsContext){
@@ -557,7 +569,7 @@ index feeae55..14f438f 100644
  		while (true) {
  			// OpenGL mode uses this.
  			{
-@@ -2610,7 +2783,7 @@ int main(int argc, char *argv[]) {
+@@ -2610,7 +2787,7 @@ int main(int argc, char *argv[]) {
  
  			UpdateTextFocus(window);
  			UpdateSDLCursor();
@@ -566,7 +578,7 @@ index feeae55..14f438f 100644
  			kick_battery_poll_thread();
  #endif
  
-@@ -2638,7 +2811,7 @@ int main(int argc, char *argv[]) {
+@@ -2638,7 +2815,7 @@ int main(int argc, char *argv[]) {
  		EmuThread_Join(graphicsContext, emuThread);
  	}
  
@@ -575,6 +587,51 @@ index feeae55..14f438f 100644
  	stop_battery_poll_thread = true;
  	SDL_SignalSemaphore(battery_poll_thread_sema);
  	battery_poll_thread.join();
+diff --git a/UI/MainScreen.cpp b/UI/MainScreen.cpp
+index aa2912a..7f8c13d 100644
+--- a/UI/MainScreen.cpp
++++ b/UI/MainScreen.cpp
+@@ -414,7 +414,8 @@ void MainScreen::CreateMainButtons(UI::LinearLayout *parent, bool portrait) {
+ 
+ 		// Officially, iOS apps should not have exit buttons. Remove it to maximize app store review chances.
+ 		// (The exit button previously created problems on Android, but now we allow it in landscape mode.)
+-#if !PPSSPP_PLATFORM(IOS_APP_STORE)
++// In a browser, exiting would only leave a dead page.
++#if !PPSSPP_PLATFORM(IOS_APP_STORE) && !defined(__EMSCRIPTEN__)
+ 		Choice *exitButton = buttons->Add(new Choice(di->T("Exit")));
+ 		exitButton->OnClick.Add([](UI::EventParams &e) {
+ 			// Let's make sure the config was saved, since it may not have been.
+@@ -466,8 +467,16 @@ void MainScreen::CreateViews() {
+ 
+ 	Button *focusButton = nullptr;
+ 	if (hasStorageAccess) {
++#ifdef __EMSCRIPTEN__
++		// Web build: the server provides the games (synced into the memory stick's ISO and PSP/GAME
++		// folders), so the lists are fixed: no browsing elsewhere, uploading, pinning, store or
++		// "how to get games" links.
++		CreateBrowserTab(g_Config.memStickDirectory / "ISO", "Games", "", "", BrowseFlags::NONE, &g_Config.iGameBrowserView2, &g_Config.fGameListScrollPosition);
++		CreateBrowserTab(GetSysDirectory(DIRECTORY_GAME), "Homebrew & Demos", "", "", BrowseFlags::NONE, &g_Config.iGameBrowserView3, &g_Config.fHomebrewScrollPosition);
++#else
+ 		CreateBrowserTab(Path(g_Config.currentDirectory), "Games", "How to get games", getGamesUri, BrowseFlags::STANDARD, &g_Config.iGameBrowserView2, &g_Config.fGameListScrollPosition);
+ 		CreateBrowserTab(GetSysDirectory(DIRECTORY_GAME), "Homebrew & Demos", "How to get homebrew & demos", getHomebrewUri, BrowseFlags::HOMEBREW_STORE, &g_Config.iGameBrowserView3, &g_Config.fHomebrewScrollPosition);
++#endif
+ 
+ 		if (g_Config.bRemoteTab && !g_Config.sLastRemoteISOServer.empty()) {
+ 			Path remotePath(FormatRemoteISOUrl(g_Config.sLastRemoteISOServer.c_str(), g_Config.iLastRemoteISOPort, RemoteSubdir().c_str()));
+@@ -483,6 +492,13 @@ void MainScreen::CreateViews() {
+ 			tabHolder_->SetCurrentTab(1, true);	
+ 		}
+ 
++#ifdef __EMSCRIPTEN__
++		// Web build: open on the game list (after Recent, if that tab is shown).
++		if (g_lastMainScreenTab < 0) {
++			tabHolder_->SetCurrentTab(showRecent ? 1 : 0, true);
++		}
++#endif
++
+ 		if (backFromStore_ || showHomebrewTab) {
+ 			tabHolder_->SetCurrentTab(2, true);
+ 			backFromStore_ = false;
 diff --git a/ext/CMakeLists.txt b/ext/CMakeLists.txt
 index 39f943e..7ebc22c 100644
 --- a/ext/CMakeLists.txt

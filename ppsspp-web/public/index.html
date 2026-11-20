@@ -20,15 +20,10 @@
   .muted { color: var(--muted); }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 12px; }
   .panel h2 { margin: 0; font-size: 1rem; }
-  button, .file { font: 600 14px var(--sans); padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+  button { font: 600 14px var(--sans); padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #0b1218; }
   button:disabled { opacity: .5; cursor: default; }
-  button:focus-visible, .file:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
-  .file input { display: none; }
-  ul.games { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-  ul.games li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; }
-  ul.games .name { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); font-size: 13px; }
-  ul.games .size { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   progress { width: 100%; height: 10px; }
   .checks { display: grid; gap: 4px; font-family: var(--mono); font-size: 13px; }
   .checks .ok { color: var(--ok); } .checks .bad { color: var(--bad); }
@@ -48,7 +43,7 @@
 <main id="launcher">
   <div>
     <h1>PPSSPP Web</h1>
-    <p class="muted">The PPSSPP PSP emulator, compiled to WebAssembly. Load your own game dump (ISO, CSO or CHD); it is copied into this browser's private storage once and never leaves your computer.</p>
+    <p class="muted">The PPSSPP PSP emulator, compiled to WebAssembly. The games come from this server; they are downloaded into your browser's storage once, then start from there.</p>
   </div>
 
   <section class="panel" aria-labelledby="h-checks">
@@ -57,15 +52,11 @@
   </section>
 
   <section class="panel" aria-labelledby="h-games">
-    <h2 id="h-games">Your games</h2>
-    <ul class="games" id="games"><li class="muted">Loading…</li></ul>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-      <label class="file">Add game file…<input type="file" id="pick" accept=".iso,.cso,.chd,.pbp,.elf,.prx,.zip"></label>
-      <button id="menu" type="button">Open PPSSPP menu</button>
-    </div>
-    <div id="importing" hidden>
-      <p id="import-label" class="muted"></p>
-      <progress id="import-bar" max="1" value="0"></progress>
+    <h2 id="h-games">Games</h2>
+    <p id="sync-label" class="muted">Checking for games…</p>
+    <progress id="sync-bar" max="1" value="0" hidden></progress>
+    <div>
+      <button id="start" class="primary" type="button" disabled>Start</button>
     </div>
   </section>
 
@@ -99,7 +90,7 @@
     <button id="fs" type="button">Fullscreen</button>
     <button id="reload" type="button">Back to launcher</button>
   </div>
-  <pre id="stats" aria-live="off"></pre>
+  <pre id="stats" aria-live="off" hidden></pre>
   <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
 </div>
 

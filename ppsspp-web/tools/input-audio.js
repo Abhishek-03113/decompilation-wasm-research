@@ -32,14 +32,11 @@ const fakePad = () => {
   await page.addInitScript(fakePad)
   await page.goto('http://localhost:8080/')
   await page.waitForTimeout(800)
-  await page.click('#menu')
+  await page.waitForFunction(() => !document.querySelector('#start').disabled, null, { timeout: 60000 })
+  await page.click('#start')
   await page.waitForTimeout(8000)
 
   // Audio: the mixer should keep the ring ~50 ms ahead, and the worklet should keep draining it.
-  const ring = async () => page.evaluate(() => {
-    const p = window.__ringPtr || 0
-    return null
-  })
   const audioState = async () => page.evaluate(() => {
     const t = document.querySelector('#stats').textContent
     const m = t.match(/Audio: (\d+) ms buffered · (\d+) silent/)

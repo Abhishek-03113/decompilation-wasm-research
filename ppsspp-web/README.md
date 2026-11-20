@@ -1,8 +1,9 @@
 # PPSSPP Web
 
 [PPSSPP](https://github.com/hrydgard/ppsspp) (the PSP emulator) compiled to WebAssembly and served
-by a [Bun](https://bun.sh) server. You load your own game dump into the page; it is copied into the browser's
-private storage (OPFS) once and booted from there. First target game: **Tekken 6**.
+by a [Bun](https://bun.sh) server. The **server provides the games**: players open the page, the games are
+downloaded into their browser's storage (OPFS) once, and **Start** boots straight into PPSSPP's game list.
+Players can't add files. First target game: **Tekken 6**.
 
 | PPSSPP's menu in the browser | `cube.iso` booted from browser storage, 60 fps |
 |---|---|
@@ -12,11 +13,31 @@ private storage (OPFS) once and booted from there. First target game: **Tekken 6
 
 ```sh
 sh build.sh          # ~30-40 min the first time: Emscripten SDK, SDL3, PPSSPP at 7710606 + patches/
+cp /path/to/Tekken6.iso memstick/ISO/   # games go on the server's memory stick
 bun install
 bun start            # http://localhost:8080  (bun --watch: bun run dev)
 ```
 
-Then **Add game file…** (ISO, CSO or CHD), wait for the copy, and press **Play**.
+Open the page, wait for "1 game ready", press **Start**, and pick the game.
+
+### Games on the server
+
+`memstick/` (or `MEMSTICK_DIR`) uses the PSP memory stick layout. Only two folders are sent to players:
+
+| Server folder | Shows up in PPSSPP as |
+|---|---|
+| `memstick/ISO/` (`.iso`, `.cso`, `.chd`) | **Games** tab |
+| `memstick/PSP/GAME/<name>/EBOOT.PBP` | **Homebrew & Demos** tab |
+
+- On each visit the page fetches `memstick/manifest.json` and downloads only new or changed files
+  (by size and modification time), in 64 MB pieces saved as they arrive, so a closed tab resumes.
+  Files you delete on the server are deleted from players' storage too.
+- Players' saves and settings (`PSP/SAVEDATA`, `PSP/SYSTEM`, ...) stay in their own browser and are never
+  synced or overwritten. Nothing else on the server's memory stick is served.
+- In PPSSPP, the Games tab is fixed to `ms:/ISO`: no browsing to other folders, no upload, pin, store,
+  "how to get games" links or Exit button. Settings stay available.
+- Game files are git-ignored. Only host games you have the right to share, and put the server behind a password
+  if it's reachable from the internet.
 Use current Chrome or Edge first; Firefox and Safari are untested so far. The page has to be served
 with the COOP/COEP headers that `server.ts` sends, from `localhost` or HTTPS, or threads are disabled
 and PPSSPP won't start.
@@ -28,7 +49,7 @@ and PPSSPP won't start.
 - **DualShock 4 / DualSense** (USB or Bluetooth, Chrome or Edge): works with no setup. Face buttons, D-pad and left
   stick map one to one, L1/R1 = L/R, Options = Start, Share/Create = Select, PS button or L2 = pause menu.
   Press any button once after plugging in so the browser exposes the pad. Remap in Settings → Controls.
-- **F2** shows or hides the stats overlay; **Copy stats** copies it with your browser version, for reporting speed.
+- **F2** shows or hides the stats overlay (hidden by default); **Copy stats** copies it with your browser version, for reporting speed.
 
 ## Measuring speed (for Tekken 6)
 
@@ -69,7 +90,7 @@ and PPSSPP won't start.
 | PPSSPP UI in headless Chromium | Works, 60 fps |
 | Audio (AudioWorklet) | Consumes audio in real time (2.97 s in ~3 s), ~50 ms buffered, 0 gaps after boot |
 | Simulated DualShock 4 (Chrome's id, standard mapping) | `controller.pbp` reports L, R, Cross, Triangle, Start and Up correctly |
-| Import → OPFS → boot an ISO | Works (`pspautotests/demos/cube.iso`, 60 fps on a software GPU) |
+| Server memstick → OPFS → game list → boot | Works (`cube.iso`: first visit downloads, second downloads nothing, server-side delete/change pruned/re-fetched) |
 | Tekken 6 | Not tried yet: needs your own dump |
 
 ## Bugs fixed on the way (all in `patches/ppsspp-wasm.patch`)
@@ -99,7 +120,7 @@ and PPSSPP won't start.
 
 - **Server:** Bun 1.4 (`Bun.serve` in `server.ts`, no dependencies). It sets COOP/COEP/CORP on every
   response, serves `.wasm` as `application/wasm`, and only serves files inside `public/`.
-- **Browser tests** (`tools/*.js`, Playwright + Chromium) run under Bun too: `bun tools/boot.js <file>`.
+- **Browser tests** (`tools/*.js`, Playwright + Chromium) run under Bun too: `bun tools/server-sync.js memstick`.
 - **Exception: the headless PSP test runner** (`PPSSPPHeadless.js`, built with `-sENVIRONMENT=node`)
   still needs **Node.js**. Under Bun 1.4 it hangs before its first output: Emscripten's Node runtime
   starts pthreads with `worker_threads` and blocks on `Atomics.wait`, which Bun's Node compatibility
@@ -107,9 +128,8 @@ and PPSSPP won't start.
 
 ## Tools
 
-- `tools/boot.js <file>`: imports a file through the page in headless Chromium, boots it, prints frame counters, screenshots.
+- `tools/server-sync.js <memstick-dir>`: first visit, repeat visit, then server-side delete and change; screenshots the game list.
 - `tools/smoke2.js`: opens the PPSSPP menu and prints frame counters.
-- `tools/controller.js <controller.pbp>`: holds buttons on a simulated DualShock 4 and checks audio keeps flowing.
 - `tools/input-audio.js`: checks the menu reacts to the simulated pad and the stats overlay.
 - `tools/stacks.js`: pauses every worker and prints its call stack (build with `WASM_DEBUG=ON`).
 

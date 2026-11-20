@@ -1,8 +1,9 @@
 // Launcher for the PPSSPP WebAssembly build (build/PPSSPPSDL.js).
 //
-// Game files live in the Origin Private File System (OPFS), under games/. The WebAssembly side
-// mounts OPFS at /opfs before main() runs, so PPSSPP opens /opfs/games/<file> like a normal file,
-// and its memory stick (saves, settings) lives at /opfs/memstick.
+// Games come from the server's memory stick (ISO/ and PSP/GAME/) and are synced into the browser's
+// Origin Private File System (OPFS) under memstick/. The WebAssembly side mounts OPFS at /opfs
+// before main() runs, so PPSSPP's memory stick is /opfs/memstick: the synced games plus this
+// player's own saves and settings. PPSSPP starts on its game list; players can't add files.
 'use strict'
 
 const $ = (id) => document.getElementById(id)
@@ -44,105 +45,137 @@ function runChecks() {
   return allOk
 }
 
-// --- Game library in OPFS -------------------------------------------------------------------
+// --- Syncing games from the server ----------------------------------------------------------
+// The server lists its memory stick's ISO/ and PSP/GAME/ folders in memstick/manifest.json. Each
+// file is copied into OPFS at memstick/<path> once, and again only if the server's copy changes.
+// Downloads are written in 64 MB pieces that are saved as they go, so a closed tab resumes where
+// it stopped. Files removed on the server are removed here. Saves and settings are never touched.
 
-async function gamesDir() {
-  const root = await navigator.storage.getDirectory()
-  return root.getDirectoryHandle('games', { create: true })
+const SYNC_STATE = '.sync-state.json'   // at the OPFS root, outside the memory stick
+const PIECE = 64 * 1024 * 1024
+
+async function readJson(dir, name) {
+  try { return JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text()) } catch { return {} }
 }
 
-async function listGames() {
-  const dir = await gamesDir()
-  const games = []
+async function writeJson(dir, name, value) {
+  const w = await (await dir.getFileHandle(name, { create: true })).createWritable()
+  await w.write(JSON.stringify(value))
+  await w.close()
+}
+
+async function dirFor(root, parts, create) {
+  let dir = root
+  for (const p of parts) dir = await dir.getDirectoryHandle(p, { create })
+  return dir
+}
+
+async function localSize(fileHandle) {
+  try { return (await fileHandle.getFile()).size } catch { return 0 }
+}
+
+// Removes files under `dir` (relative path `prefix`) that aren't in `keep`.
+async function prune(dir, prefix, keep) {
   for await (const [name, handle] of dir.entries()) {
-    if (handle.kind !== 'file') continue
-    const file = await handle.getFile()
-    games.push({ name, size: file.size })
-  }
-  return games.sort((a, b) => a.name.localeCompare(b.name))
-}
-
-async function renderGames() {
-  const ul = $('games')
-  ul.textContent = ''
-  let games = []
-  try {
-    games = await listGames()
-  } catch (e) {
-    ul.innerHTML = '<li class="muted"></li>'
-    ul.firstChild.textContent = 'Could not open browser storage: ' + e.message
-    return
-  }
-  if (!games.length) {
-    const li = document.createElement('li')
-    li.className = 'muted'
-    li.textContent = 'No games yet. Add your own dump of a PSP game with the button below.'
-    ul.appendChild(li)
-    return
-  }
-  for (const g of games) {
-    const li = document.createElement('li')
-    const name = document.createElement('span')
-    name.className = 'name'
-    name.textContent = g.name
-    const size = document.createElement('span')
-    size.className = 'size'
-    size.textContent = formatSize(g.size)
-    const play = document.createElement('button')
-    play.className = 'primary'
-    play.type = 'button'
-    play.textContent = 'Play'
-    play.addEventListener('click', () => start('/opfs/games/' + g.name))
-    const del = document.createElement('button')
-    del.type = 'button'
-    del.textContent = 'Remove'
-    del.addEventListener('click', async () => {
-      if (del.dataset.confirm !== '1') {
-        del.dataset.confirm = '1'
-        del.textContent = 'Click again to remove'
-        return
-      }
-      const dir = await gamesDir()
-      await dir.removeEntry(g.name)
-      log('Removed ' + g.name)
-      renderGames()
-    })
-    li.append(name, size, play, del)
-    ul.appendChild(li)
+    const rel = prefix + name
+    if (handle.kind === 'directory') {
+      await prune(handle, rel + '/', keep)
+    } else if (!keep.has(rel)) {
+      await dir.removeEntry(name)
+      log('Removed ' + rel + ' (no longer on the server)')
+    }
   }
 }
 
-// Streams the picked file into OPFS with progress, so a 1-2 GB ISO never sits in memory.
-async function importGame(file) {
-  const safeName = file.name.replace(/[\\/:*?"<>|]/g, '_')
-  $('importing').hidden = false
-  $('import-label').textContent = 'Copying ' + safeName + ' into browser storage…'
-  const bar = $('import-bar')
-  bar.value = 0
-  try {
+async function downloadFile(fileHandle, url, size, offset, onBytes) {
+  const headers = offset > 0 ? { Range: `bytes=${offset}-` } : {}
+  const res = await fetch(url, { headers, cache: 'no-store' })
+  if (offset > 0 && res.status !== 206) {
+    // The server ignored the range: start over.
+    return downloadFile(fileHandle, url, size, 0, onBytes)
+  }
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
+  const reader = res.body.getReader()
+  let pos = offset
+  let writable = await fileHandle.createWritable({ keepExistingData: offset > 0 })
+  if (offset > 0) await writable.seek(offset)
+  else await writable.truncate(0)
+  let inPiece = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    await writable.write(value)
+    pos += value.byteLength
+    inPiece += value.byteLength
+    onBytes(value.byteLength)
+    if (inPiece >= PIECE) {
+      await writable.close()   // saves this piece for good
+      writable = await fileHandle.createWritable({ keepExistingData: true })
+      await writable.seek(pos)
+      inPiece = 0
+    }
+  }
+  await writable.close()
+  if (pos !== size) throw new Error(`${url}: got ${pos} of ${size} bytes`)
+}
+
+async function syncGames() {
+  const label = $('sync-label')
+  const bar = $('sync-bar')
+  const res = await fetch('memstick/manifest.json', { cache: 'no-store' })
+  if (!res.ok) throw new Error('memstick/manifest.json: HTTP ' + res.status)
+  const manifest = await res.json()
+  const root = await navigator.storage.getDirectory()
+  const memstick = await root.getDirectoryHandle('memstick', { create: true })
+  const state = await readJson(root, SYNC_STATE)
+
+  // Work out what to fetch.
+  const todo = []
+  for (const f of manifest.files) {
+    const parts = f.path.split('/')
+    const dir = await dirFor(memstick, parts.slice(0, -1), true)
+    const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true })
+    const have = await localSize(handle)
+    const known = state[f.path]
+    const sameVersion = known && known.size === f.size && known.mtime === f.mtime
+    if (sameVersion && have === f.size) continue
+    todo.push({ f, handle, offset: sameVersion && have < f.size ? have : 0 })
+  }
+
+  const keep = new Set(manifest.files.map((f) => f.path))
+  for (const d of manifest.dirs) {
+    try { await prune(await dirFor(memstick, d.split('/'), false), d + '/', keep) } catch { /* folder absent */ }
+  }
+  for (const k of Object.keys(state)) if (!keep.has(k)) delete state[k]
+
+  const games = manifest.files.filter((f) => f.path.startsWith('ISO/')).length
+  const totalSize = manifest.files.reduce((n, f) => n + f.size, 0)
+  if (todo.length) {
     if (navigator.storage.persist) {
       const persisted = await navigator.storage.persist()
-      log(persisted ? 'Storage marked persistent.' : 'Storage is best-effort; the browser may evict it when space is low.')
+      if (!persisted) log('Browser storage is best-effort here; the browser may clear it when space runs low.')
     }
-    const dir = await gamesDir()
-    const handle = await dir.getFileHandle(safeName, { create: true })
-    const writable = await handle.createWritable()
+    const total = todo.reduce((n, t) => n + t.f.size - t.offset, 0)
     let done = 0
-    const counter = new TransformStream({
-      transform(chunk, controller) {
-        done += chunk.byteLength
-        bar.value = done / file.size
-        controller.enqueue(chunk)
-      },
-    })
-    await file.stream().pipeThrough(counter).pipeTo(writable)
-    log('Imported ' + safeName + ' (' + formatSize(file.size) + ')')
-  } catch (e) {
-    log('Import failed: ' + e.message)
-  } finally {
-    $('importing').hidden = true
-    renderGames()
+    bar.hidden = false
+    for (const t of todo) {
+      state[t.f.path] = { size: t.f.size, mtime: t.f.mtime }
+      await writeJson(root, SYNC_STATE, state)
+      label.textContent = `Downloading ${t.f.path}${t.offset ? ' (resuming)' : ''}…`
+      const url = 'memstick/' + t.f.path.split('/').map(encodeURIComponent).join('/')
+      await downloadFile(t.handle, url, t.f.size, t.offset, (n) => {
+        done += n
+        bar.value = total ? done / total : 1
+        label.textContent = `Downloading ${t.f.path}: ${formatSize(done)} of ${formatSize(total)}`
+      })
+      log('Downloaded ' + t.f.path + ' (' + formatSize(t.f.size) + ')')
+    }
+    bar.hidden = true
   }
+  await writeJson(root, SYNC_STATE, state)
+  label.textContent = games
+    ? `${games} game${games === 1 ? '' : 's'} ready (${formatSize(totalSize)} in browser storage).`
+    : 'No games on this server yet. Put ISO, CSO or CHD files in the server\'s memstick/ISO folder.'
 }
 
 // --- Starting PPSSPP ------------------------------------------------------------------------
@@ -272,7 +305,7 @@ function startStats(Module) {
   })
 }
 
-async function start(bootPath) {
+async function start() {
   if (started) return
   started = true
   createAudio()
@@ -280,12 +313,14 @@ async function start(bootPath) {
     log('Loading PPSSPP…')
     const Module = await loadRuntime()
     await mountOPFS(Module)
-    try { Module.FS.mkdir('/opfs/memstick') } catch (e) { /* already there */ }
+    for (const d of ['/opfs/memstick', '/opfs/memstick/ISO']) {
+      try { Module.FS.mkdir(d) } catch (e) { /* already there */ }
+    }
     $('launcher').hidden = true
     $('stage').classList.add('on')
     $('canvas').focus()
+    // No boot file: PPSSPP opens on its game list (memstick ISO/ folder).
     const args = ['--memstick=/opfs/memstick']
-    if (bootPath) args.push(bootPath)
     log('Starting PPSSPP ' + args.join(' '))
     Module.callMain(args)
     await startAudio(Module)
@@ -299,12 +334,7 @@ async function start(bootPath) {
 
 // --- Wiring ---------------------------------------------------------------------------------
 
-$('pick').addEventListener('change', (e) => {
-  const file = e.target.files && e.target.files[0]
-  if (file) importGame(file)
-  e.target.value = ''
-})
-$('menu').addEventListener('click', () => start(null))
+$('start').addEventListener('click', () => start())
 $('fs').addEventListener('click', () => {
   const el = $('stage')
   if (el.requestFullscreen) el.requestFullscreen().catch(() => {})
@@ -313,4 +343,8 @@ $('reload').addEventListener('click', () => location.reload())
 
 const ok = runChecks()
 if (!ok) log('Some browser features are missing; PPSSPP may not start.')
-if (navigator.storage && navigator.storage.getDirectory) renderGames()
+if (navigator.storage && navigator.storage.getDirectory) {
+  syncGames()
+    .then(() => { $('start').disabled = false; $('start').focus() })
+    .catch((e) => { $('sync-label').textContent = 'Could not get the games: ' + e.message; log(e.stack || e.message) })
+}
