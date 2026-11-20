@@ -2,6 +2,8 @@
 # Builds PPSSPP for the browser and copies the result into public/build/.
 #
 #   sh build.sh [work-dir]          (default work dir: ./.work)
+#   WASM_PROFILE=ON sh build.sh     keep C++ function names for Chrome DevTools profiles
+#   WASM_DEBUG=ON sh build.sh       runtime assertions and stack checks (slow)
 #
 # Needs git, cmake, ninja, python3 and bun (to serve it). Downloads the Emscripten SDK (~1 GB) into the work dir.
 # Takes about 30-40 minutes on 4 cores the first time; later runs are incremental.
@@ -51,7 +53,7 @@ emcmake cmake -B build-web -G Ninja -Wno-dev \
   -DHEADLESS=OFF -DHEADLESS_CROSS:BOOL=OFF -DUSING_GLES2=ON \
   -DUSE_DISCORD=OFF -DUSE_MINIUPNPC=OFF -DUSE_SYSTEM_LIBPNG=OFF -DUSE_FFMPEG=ON \
   -DUSE_NO_MMAP=ON -DUSE_CCACHE=OFF -DUNITTEST=OFF -DATLAS_TOOL=OFF \
-  -DWASM_DEBUG="${WASM_DEBUG:-OFF}"
+  -DWASM_DEBUG="${WASM_DEBUG:-OFF}" -DWASM_PROFILE="${WASM_PROFILE:-OFF}"
 ninja -C build-web PPSSPPSDL
 
 # 5. Copy the output next to the page.

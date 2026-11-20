@@ -40,6 +40,8 @@
   #canvas { width: 100%; height: 100%; display: block; }
   #hud { position: fixed; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 2; }
   #hud button { padding: 5px 10px; font-size: 12px; opacity: .75; }
+  #stats { position: fixed; top: 8px; left: 8px; z-index: 2; margin: 0; padding: 8px 10px; border-radius: 8px;
+    background: rgba(8, 12, 16, .78); color: #d8e4ee; font: 12px/1.45 var(--mono); white-space: pre; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -68,16 +70,21 @@
   </section>
 
   <section class="panel" aria-labelledby="h-keys">
-    <h2 id="h-keys">Default keyboard controls</h2>
+    <h2 id="h-keys">Controls</h2>
+    <p class="muted">Keyboard: PPSSPP's default layout.</p>
     <table>
       <tr><td>Arrow keys</td><td>D-pad</td></tr>
-      <tr><td>I J K L</td><td>Analog stick</td></tr>
-      <tr><td>S X Z A</td><td>Circle, Cross, Square, Triangle (PPSSPP's defaults; remap in Settings → Controls)</td></tr>
+      <tr><td>I / J / K / L</td><td>Analog stick up / left / down / right</td></tr>
+      <tr><td>Z / X / A / S</td><td>Cross / Circle / Square / Triangle</td></tr>
       <tr><td>Q / W</td><td>L / R</td></tr>
-      <tr><td>Space / Enter</td><td>Start, Select: check Settings → Controls</td></tr>
-      <tr><td>Esc</td><td>PPSSPP pause menu</td></tr>
+      <tr><td>Space / Enter</td><td>Start / Select</td></tr>
+      <tr><td>Esc</td><td>Pause menu</td></tr>
+      <tr><td>Tab (hold)</td><td>Fast forward</td></tr>
+      <tr><td>F2</td><td>Show or hide the stats overlay</td></tr>
     </table>
-    <p class="muted">Gamepads work through the browser's Gamepad API: press a button on the pad once so the browser exposes it.</p>
+    <p class="muted">DualShock 4 / DualSense (USB or Bluetooth, in Chrome or Edge): face buttons, D-pad and left stick
+      map one to one; L1 / R1 are L / R; Options is Start, Share / Create is Select; the PS button or L2 opens the pause menu.
+      Press any button once after connecting so the browser exposes the pad. Remap in Settings → Controls.</p>
   </section>
 
   <section class="panel" aria-labelledby="h-log">
@@ -88,9 +95,11 @@
 
 <div id="stage">
   <div id="hud">
+    <button id="copy-stats" type="button">Copy stats</button>
     <button id="fs" type="button">Fullscreen</button>
     <button id="reload" type="button">Back to launcher</button>
   </div>
+  <pre id="stats" aria-live="off"></pre>
   <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
 </div>
 

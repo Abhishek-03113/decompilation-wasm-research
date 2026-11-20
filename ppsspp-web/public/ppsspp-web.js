@@ -181,9 +181,101 @@ async function mountOPFS(Module) {
   throw new Error('Timed out mounting browser storage')
 }
 
+// --- Audio ---------------------------------------------------------------------------------
+// Browsers only allow audio to start from a user gesture, so the AudioContext is created
+// synchronously in the Play / menu click, before any await.
+let audio = null
+
+function createAudio() {
+  try {
+    const ctx = new AudioContext({ latencyHint: 'interactive' })
+    const ready = ctx.audioWorklet.addModule('audio-worklet.js').then(() => {
+      const node = new AudioWorkletNode(ctx, 'ppsspp-audio', { numberOfInputs: 0, outputChannelCount: [2] })
+      node.connect(ctx.destination)
+      return node
+    })
+    audio = { ctx, ready, ring: 0 }
+    window.ppssppAudio = audio // for debugging and tools/input-audio.js
+  } catch (e) {
+    log('Audio unavailable: ' + e.message)
+  }
+}
+
+async function startAudio(Module) {
+  if (!audio) return
+  try {
+    const node = await audio.ready
+    // Stay ~50 ms ahead of the audio thread: low enough for a fighting game, with room for hiccups.
+    const targetFrames = Math.round(audio.ctx.sampleRate * 0.05)
+    audio.ring = Module._PPSSPPWeb_StartAudio(audio.ctx.sampleRate, targetFrames)
+    node.port.postMessage({ buffer: Module.HEAPU8.buffer, ptr: audio.ring })
+    if (audio.ctx.state !== 'running') await audio.ctx.resume()
+    log(`Audio: ${audio.ctx.sampleRate} Hz AudioWorklet, ${Math.round(targetFrames / audio.ctx.sampleRate * 1000)} ms buffer`)
+  } catch (e) {
+    log('Audio failed to start: ' + e.message)
+  }
+}
+
+// --- Stats overlay (F2) ---------------------------------------------------------------------
+
+let statsTimer = 0
+let lastCounts = null
+
+function readStats(Module) {
+  const now = performance.now()
+  const counts = { t: now, page: Module._PPSSPPWeb_Stat(0), emu: Module._PPSSPPWeb_Stat(1), drawn: Module._PPSSPPWeb_Stat(2) }
+  const s = {
+    inGame: Module._PPSSPPWeb_Perf(4) > 0,
+    vps: Module._PPSSPPWeb_Perf(0),
+    fps: Module._PPSSPPWeb_Perf(1),
+    speed: Module._PPSSPPWeb_Perf(3),
+  }
+  if (lastCounts) {
+    const dt = (now - lastCounts.t) / 1000
+    s.pageHz = (counts.page - lastCounts.page) / dt
+    s.emuHz = (counts.emu - lastCounts.emu) / dt
+  }
+  lastCounts = counts
+  if (audio && audio.ring) {
+    const h = new Uint32Array(Module.HEAPU8.buffer, audio.ring, 4)
+    s.audioMs = ((h[0] - h[1]) >>> 0) / audio.ctx.sampleRate * 1000
+    s.underruns = h[2]
+  }
+  const pads = Array.from(navigator.getGamepads ? navigator.getGamepads() : []).filter(Boolean)
+  s.pad = pads.length ? pads[0].id + (pads[0].mapping === 'standard' ? '' : ' (non-standard mapping)') : 'none'
+  return s
+}
+
+function formatStats(s) {
+  const lines = []
+  if (s.inGame) lines.push(`Game: ${s.fps.toFixed(0)} fps · speed ${s.speed.toFixed(0)}% (${s.vps.toFixed(1)} vblanks/s)`)
+  else lines.push('Game: not running (menu)')
+  if (s.emuHz !== undefined) lines.push(`Threads: page ${s.pageHz.toFixed(0)} Hz · emulator ${s.emuHz.toFixed(0)} Hz`)
+  if (s.audioMs !== undefined) lines.push(`Audio: ${s.audioMs.toFixed(0)} ms buffered · ${s.underruns} silent frames`)
+  lines.push(`Gamepad: ${s.pad}`)
+  return lines.join('\n')
+}
+
+function startStats(Module) {
+  const box = $('stats')
+  const tick = () => { box.textContent = formatStats(readStats(Module)) }
+  tick()
+  statsTimer = setInterval(tick, 500)
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'F2') { box.hidden = !box.hidden; e.preventDefault() }
+  }, true)
+  $('copy-stats').addEventListener('click', async () => {
+    const report = formatStats(readStats(Module)) + '\n' + navigator.userAgent
+    try { await navigator.clipboard.writeText(report); $('copy-stats').textContent = 'Copied' }
+    catch { log(report); $('copy-stats').textContent = 'Copied to log' }
+    setTimeout(() => { $('copy-stats').textContent = 'Copy stats' }, 1500)
+  })
+}
+
 async function start(bootPath) {
   if (started) return
   started = true
+  createAudio()
   try {
     log('Loading PPSSPP…')
     const Module = await loadRuntime()
@@ -196,6 +288,8 @@ async function start(bootPath) {
     if (bootPath) args.push(bootPath)
     log('Starting PPSSPP ' + args.join(' '))
     Module.callMain(args)
+    await startAudio(Module)
+    startStats(Module)
   } catch (e) {
     log('Failed to start: ' + e.message)
     $('launcher').hidden = false

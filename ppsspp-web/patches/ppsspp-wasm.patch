@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 88a67ae..e5b69ae 100644
+index 88a67ae..9dd4cc4 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -27,7 +27,10 @@ if(FORCED_CPU)
@@ -76,7 +76,7 @@ index 88a67ae..e5b69ae 100644
  	setup_target_project(PPSSPPHeadless headless)
  endif()
  
-@@ -1551,6 +1584,19 @@ if(TargetBin)
+@@ -1551,6 +1584,21 @@ if(TargetBin)
  	endif()
  endif()
  
@@ -88,9 +88,11 @@ index 88a67ae..e5b69ae 100644
 +		-sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=512MB -sMAXIMUM_MEMORY=2GB
 +		-sSTACK_SIZE=8MB -sDEFAULT_PTHREAD_STACK_SIZE=4MB -sPTHREAD_POOL_SIZE=16
 +		-sWASMFS=1 -sFORCE_FILESYSTEM=1 -sEXIT_RUNTIME=0
-+		-sEXPORTED_RUNTIME_METHODS=FS,ENV,callMain -sINVOKE_RUN=0 -sENVIRONMENT=web,worker
++		-sEXPORTED_RUNTIME_METHODS=FS,ENV,HEAPU8,callMain -sINVOKE_RUN=0 -sENVIRONMENT=web,worker
 +		"--preload-file=${CMAKE_BINARY_DIR}/assets@/assets"
-+		$<$<BOOL:${WASM_DEBUG}>:-sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2 --profiling-funcs>)
++		$<$<BOOL:${WASM_DEBUG}>:-sASSERTIONS=2 -sSTACK_OVERFLOW_CHECK=2 --profiling-funcs>
++		# Keeps function names so Chrome DevTools profiles show C++ names (a few MB larger, same speed).
++		$<$<BOOL:${WASM_PROFILE}>:--profiling-funcs>)
 +endif()
 +
  if(TargetBin)
@@ -298,12 +300,38 @@ index 061ffdc..8bc90b2 100644
  	void ThreadEnd() override {
  		renderManager_->ThreadEnd();
  	}
+diff --git a/SDL/SDLJoystick.cpp b/SDL/SDLJoystick.cpp
+index 1dee449..2f82898 100644
+--- a/SDL/SDLJoystick.cpp
++++ b/SDL/SDLJoystick.cpp
+@@ -134,10 +134,19 @@ InputKeyCode SDLJoystick::getKeycodeForButton(SDL_GamepadButton button) {
+ 		return NKCODE_BUTTON_4;
+ 	case SDL_GAMEPAD_BUTTON_NORTH:
+ 		return NKCODE_BUTTON_1;
++#ifdef __EMSCRIPTEN__
++	// The default pad map (KeyMapDefaults.cpp, defaultPadMap) puts L and R on BUTTON_7 and BUTTON_8.
++	// Send the shoulders as those, so L1/R1 on a DualShock work without remapping.
++	case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
++		return NKCODE_BUTTON_8;
++	case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
++		return NKCODE_BUTTON_7;
++#else
+ 	case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
+ 		return NKCODE_BUTTON_5;
+ 	case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
+ 		return NKCODE_BUTTON_6;
++#endif
+ 	case SDL_GAMEPAD_BUTTON_START:
+ 		return NKCODE_BUTTON_10;
+ 	case SDL_GAMEPAD_BUTTON_BACK:
 diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
-index feeae55..bbaf182 100644
+index feeae55..14f438f 100644
 --- a/SDL/SDLMain.cpp
 +++ b/SDL/SDLMain.cpp
-@@ -1,4 +1,39 @@
+@@ -1,4 +1,41 @@
  
++#include "Core/HW/Display.h"
++#include <cstddef>
 +#ifdef __EMSCRIPTEN__
 +#include <atomic>
 +#include <thread>
@@ -342,11 +370,100 @@ index feeae55..bbaf182 100644
  #include <cstdlib>
  #include <unistd.h>
  #include <pwd.h>
-@@ -2042,6 +2077,48 @@ void UpdateSDLCursor() {
+@@ -623,6 +660,11 @@ static void PollSDLMicrophone() {
+ 
+ // Must be called after NativeInit().
+ static void InitSDLAudioDevice(const std::string &name = "") {
++#ifdef __EMSCRIPTEN__
++	// In the browser, audio goes through an AudioWorklet instead (see PPSSPPWeb_StartAudio).
++	// SDL's own Emscripten backend uses the deprecated ScriptProcessorNode on the main thread.
++	return;
++#endif
+ 	SDL_AudioSpec fmt{};
+ 	fmt.freq = g_sampleRate;
+ 	fmt.format = SDL_AUDIO_S16;
+@@ -2042,6 +2084,125 @@ void UpdateSDLCursor() {
  #ifdef _WIN32
  #undef main
  #endif
 +#ifdef __EMSCRIPTEN__
++// ---- Audio for the browser ----------------------------------------------------------------
++// A mixer thread calls NativeMix and writes 16-bit stereo frames into this ring, which lives in
++// WebAssembly memory. The page's AudioWorklet (public/audio-worklet.js) reads the same memory
++// through a SharedArrayBuffer on the browser's audio thread. The layout is shared with that file:
++// four uint32 words, then the samples.
++static constexpr uint32_t kWebAudioRingFrames = 8192;  // power of two; ~170 ms at 48 kHz
++
++struct WebAudioRing {
++	std::atomic<uint32_t> write;      // frames written so far (mixer thread)
++	std::atomic<uint32_t> read;       // frames read so far (AudioWorklet)
++	std::atomic<uint32_t> underruns;  // frames the worklet filled with silence (AudioWorklet)
++	uint32_t frames;                  // ring capacity in frames
++	int16_t samples[kWebAudioRingFrames * 2];
++};
++static_assert(sizeof(std::atomic<uint32_t>) == 4, "the AudioWorklet reads these as Uint32Array");
++static_assert(offsetof(WebAudioRing, samples) == 16, "the AudioWorklet expects samples at byte 16");
++
++static WebAudioRing *g_webAudioRing = nullptr;
++
++// Called by the page once main() has run (NativeMix needs NativeInit) and an AudioContext exists.
++// targetFrames is how far ahead of the audio thread the mixer stays: the latency.
++// Returns the ring's address in WebAssembly memory.
++extern "C" EMSCRIPTEN_KEEPALIVE uintptr_t PPSSPPWeb_StartAudio(int sampleRate, int targetFrames) {
++	if (g_webAudioRing)
++		return (uintptr_t)g_webAudioRing;
++	g_sampleRate = sampleRate;
++	g_retFmt.freq = sampleRate;
++	g_retFmt.format = SDL_AUDIO_S16;
++	g_retFmt.channels = 2;
++	g_audioFramesPerBuffer = 256;
++	targetFrames = std::clamp(targetFrames, 512, (int)kWebAudioRingFrames - 512);
++
++	WebAudioRing *ring = new WebAudioRing();
++	ring->frames = kWebAudioRingFrames;
++	g_webAudioRing = ring;
++
++	std::thread([ring, sampleRate, targetFrames] {
++		SetCurrentThreadName("WebAudioMixer");
++		constexpr int kChunk = 256;
++		int16_t chunk[kChunk * 2];
++		const uint32_t mask = kWebAudioRingFrames - 1;
++		while (true) {
++			uint32_t w = ring->write.load(std::memory_order_relaxed);
++			uint32_t r = ring->read.load(std::memory_order_acquire);
++			if ((uint32_t)(w - r) >= (uint32_t)targetFrames) {
++				sleep_ms(1, "web-audio");
++				continue;
++			}
++			NativeMix(chunk, kChunk, sampleRate, nullptr);
++			for (int i = 0; i < kChunk; i++) {
++				uint32_t slot = (w + i) & mask;
++				ring->samples[slot * 2] = chunk[i * 2];
++				ring->samples[slot * 2 + 1] = chunk[i * 2 + 1];
++			}
++			ring->write.store(w + kChunk, std::memory_order_release);
++		}
++	}).detach();
++	INFO_LOG(Log::Audio, "Web audio: %d Hz, %d frames ahead, ring at %p", sampleRate, targetFrames, (void *)ring);
++	return (uintptr_t)ring;
++}
++
++// ---- Performance counters for the page's overlay ------------------------------------------
++// 0: emulated vblanks per second, 1: game frames per second, 2: frames actually shown per second,
++// 3: emulation speed in percent (100 = full speed), 4: 1 while a game is running.
++extern "C" EMSCRIPTEN_KEEPALIVE float PPSSPPWeb_Perf(int which) {
++	float vps = 0.0f, fps = 0.0f, actualFps = 0.0f;
++	__DisplayGetFPS(&vps, &fps, &actualFps);
++	switch (which) {
++	case 0: return vps;
++	case 1: return fps;
++	case 2: return actualFps;
++	case 3: return vps / (59.94f / 100.0f);
++	case 4: return GetUIState() == UISTATE_INGAME ? 1.0f : 0.0f;
++	default: return -1.0f;
++	}
++}
++
 +// Browsers can't run a blocking loop on the main thread. The emulator runs on its own pthread
 +// (EmuThread) and records GL commands; once per animation frame, the page's main thread handles
 +// input and replays whatever the emulator has queued with WebGL2, then returns to the browser.
@@ -391,7 +508,7 @@ index feeae55..bbaf182 100644
  int main(int argc, char *argv[]) {
  	TimeInit();
  
-@@ -2171,7 +2248,10 @@ int main(int argc, char *argv[]) {
+@@ -2171,7 +2332,10 @@ int main(int argc, char *argv[]) {
  	}
  	g_DesktopWidth = displayMode->w;
  	g_DesktopHeight = displayMode->h;
@@ -403,7 +520,7 @@ index feeae55..bbaf182 100644
  	SDL_free(displayIDs);
  
  	// TODO: Should only call this if we actually intend to use OpenGL.
-@@ -2518,7 +2598,7 @@ int main(int argc, char *argv[]) {
+@@ -2518,7 +2682,7 @@ int main(int argc, char *argv[]) {
  		}
  	}
  
@@ -412,7 +529,7 @@ index feeae55..bbaf182 100644
  	// linux SDL_GetPowerInfo asks upower on dbus for power information by default, can cause DrawFPS() in DebugOverlay.cpp to block and affect frame pacing
  	bool stop_battery_poll_thread = false;
  	double last_battery_poll = 0;
-@@ -2576,7 +2656,7 @@ int main(int argc, char *argv[]) {
+@@ -2576,7 +2740,7 @@ int main(int argc, char *argv[]) {
  
  			UpdateTextFocus(window);
  			UpdateSDLCursor();
@@ -421,7 +538,7 @@ index feeae55..bbaf182 100644
  			kick_battery_poll_thread();
  #endif
  
-@@ -2594,9 +2674,18 @@ int main(int argc, char *argv[]) {
+@@ -2594,9 +2758,18 @@ int main(int argc, char *argv[]) {
  	} else {
  		// OpenGL mode uses this path.
  		std::thread emuThread = EmuThread_Start(graphicsContext, new NativeApplication(), [&](GraphicsContext *graphicsContext){
@@ -440,7 +557,7 @@ index feeae55..bbaf182 100644
  		while (true) {
  			// OpenGL mode uses this.
  			{
-@@ -2610,7 +2699,7 @@ int main(int argc, char *argv[]) {
+@@ -2610,7 +2783,7 @@ int main(int argc, char *argv[]) {
  
  			UpdateTextFocus(window);
  			UpdateSDLCursor();
@@ -449,7 +566,7 @@ index feeae55..bbaf182 100644
  			kick_battery_poll_thread();
  #endif
  
-@@ -2638,7 +2727,7 @@ int main(int argc, char *argv[]) {
+@@ -2638,7 +2811,7 @@ int main(int argc, char *argv[]) {
  		EmuThread_Join(graphicsContext, emuThread);
  	}
  
@@ -501,6 +618,20 @@ index c920eb0..8704295 100644
  
  #include <emmintrin.h>
  
+diff --git a/ext/jpge/jpgd.cpp b/ext/jpge/jpgd.cpp
+index 61487d1..f7aa92a 100644
+--- a/ext/jpge/jpgd.cpp
++++ b/ext/jpge/jpgd.cpp
+@@ -35,6 +35,9 @@
+ #pragma warning (disable : 4611) // warning C4611: interaction between '_setjmp' and C++ object destruction is non-portable
+ #endif
+ 
++#if !defined(JPGD_USE_SSE2) && defined(__EMSCRIPTEN__)
++#define JPGD_USE_SSE2 (0)
++#endif
+ #ifndef JPGD_USE_SSE2
+ 
+ 	#if defined(__GNUC__)
 diff --git a/headless/Headless.cpp b/headless/Headless.cpp
 index cc9ba43..d968fd2 100644
 --- a/headless/Headless.cpp
@@ -536,17 +667,3 @@ index 61b733c..8ffd948 100644
      #define PPSSPP_ARCH_X86 1
      #define PPSSPP_ARCH_32BIT 1
      #define PPSSPP_ARCH_SSE2 1
-diff --git a/ext/jpge/jpgd.cpp b/ext/jpge/jpgd.cpp
-index 61487d1..f7aa92a 100644
---- a/ext/jpge/jpgd.cpp
-+++ b/ext/jpge/jpgd.cpp
-@@ -35,6 +35,9 @@
- #pragma warning (disable : 4611) // warning C4611: interaction between '_setjmp' and C++ object destruction is non-portable
- #endif
- 
-+#if !defined(JPGD_USE_SSE2) && defined(__EMSCRIPTEN__)
-+#define JPGD_USE_SSE2 (0)
-+#endif
- #ifndef JPGD_USE_SSE2
- 
- 	#if defined(__GNUC__)
