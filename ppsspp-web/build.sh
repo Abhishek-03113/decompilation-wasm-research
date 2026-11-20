@@ -3,7 +3,7 @@
 #
 #   sh build.sh [work-dir]          (default work dir: ./.work)
 #
-# Needs git, cmake, ninja and python3. Downloads the Emscripten SDK (~1 GB) into the work dir.
+# Needs git, cmake, ninja, python3 and bun (to serve it). Downloads the Emscripten SDK (~1 GB) into the work dir.
 # Takes about 30-40 minutes on 4 cores the first time; later runs are incremental.
 set -eu
 
@@ -55,4 +55,4 @@ ninja -C build-web PPSSPPSDL
 # 5. Copy the output next to the page.
 mkdir -p "$HERE/public/build"
 cp build-web/PPSSPPSDL.js build-web/PPSSPPSDL.wasm build-web/PPSSPPSDL.data "$HERE/public/build/"
-echo "Done. Start the server with: cd $HERE && npm install && npm start"
+echo "Done. Start the server with: cd $HERE && bun install && bun start"

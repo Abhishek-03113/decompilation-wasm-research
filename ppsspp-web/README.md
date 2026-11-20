@@ -1,7 +1,7 @@
 # PPSSPP Web
 
 [PPSSPP](https://github.com/hrydgard/ppsspp) (the PSP emulator) compiled to WebAssembly and served
-by an Express app. You load your own game dump into the page; it is copied into the browser's
+by a [Bun](https://bun.sh) server. You load your own game dump into the page; it is copied into the browser's
 private storage (OPFS) once and booted from there. First target game: **Tekken 6**.
 
 | PPSSPP's menu in the browser | `cube.iso` booted from browser storage, 60 fps |
@@ -12,13 +12,13 @@ private storage (OPFS) once and booted from there. First target game: **Tekken 6
 
 ```sh
 sh build.sh          # ~30-40 min the first time: Emscripten SDK, SDL3, PPSSPP at 7710606 + patches/
-npm install
-npm start            # http://localhost:8080
+bun install
+bun start            # http://localhost:8080  (bun --watch: bun run dev)
 ```
 
 Then **Add game file…** (ISO, CSO or CHD), wait for the copy, and press **Play**.
 Use current Chrome or Edge first; Firefox and Safari are untested so far. The page has to be served
-with the COOP/COEP headers that `server.js` sends, from `localhost` or HTTPS, or threads are disabled
+with the COOP/COEP headers that `server.ts` sends, from `localhost` or HTTPS, or threads are disabled
 and PPSSPP won't start.
 
 ## How it works
@@ -65,6 +65,16 @@ and PPSSPP won't start.
    - tune the IR passes for the hottest blocks,
    - later, a JIT that compiles PSP code to WebAssembly modules.
 3. FFmpeg for cutscenes (currently off), SDL3_ttf, an AudioWorklet for audio, gamepad mapping checks.
+
+## Runtime
+
+- **Server:** Bun 1.4 (`Bun.serve` in `server.ts`, no dependencies). It sets COOP/COEP/CORP on every
+  response, serves `.wasm` as `application/wasm`, and only serves files inside `public/`.
+- **Browser tests** (`tools/*.js`, Playwright + Chromium) run under Bun too: `bun tools/boot.js <file>`.
+- **Exception: the headless PSP test runner** (`PPSSPPHeadless.js`, built with `-sENVIRONMENT=node`)
+  still needs **Node.js**. Under Bun 1.4 it hangs before its first output: Emscripten's Node runtime
+  starts pthreads with `worker_threads` and blocks on `Atomics.wait`, which Bun's Node compatibility
+  doesn't handle yet. Run it with `node build-wasm/PPSSPPHeadless.js ...`.
 
 ## Tools
 
