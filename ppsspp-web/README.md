@@ -31,6 +31,8 @@ and PPSSPP won't start.
 - **Files:** OPFS is mounted at `/opfs` with Emscripten's WASMFS before `main()` runs. Games go in
   `/opfs/games`; the memory stick (saves, settings) is `/opfs/memstick`, so both persist.
 - **Memory:** PSP addresses are masked into one 256 MB block.
+- **SIMD:** built with `-msimd128 -msse4.1`; Emscripten turns PPSSPP's SSE code into WebAssembly SIMD.
+- **Video:** PPSSPP's bundled FFmpeg 3.0.2 (pure C) is compiled in, for PMF/MPEG cutscenes.
 
 ## Status (20 Nov 2026)
 
@@ -38,6 +40,10 @@ and PPSSPP won't start.
 |---|---|
 | PSP CPU tests (pspautotests `cpu/`, headless in Node) | 38/61 pass. Native PPSSPP passes 41; the only differences are 3 FPU rounding-mode tests (WebAssembly has no rounding modes). The other 20 failures are upstream. |
 | Speed, same CPU test run | WebAssembly 6.5 s vs native 3.3 s (same interpreter), roughly 2× slower |
+| PSP GPU tests (`gpu/`, software renderer) | 104/114 pass |
+| PSP video tests (`video/`, with FFmpeg) | 20/39 pass, the same 20 as native PPSSPP with FFmpeg (15 without FFmpeg) |
+| SIMD on vs off | Same results in every suite; CPU and GPU suites ~6-10% faster |
+| `build.sh` from a fresh clone | Works: patches apply to upstream `7710606`, and the output boots `cube.iso` at 60 fps |
 | PPSSPP UI in headless Chromium | Works, 60 fps |
 | Import → OPFS → boot an ISO | Works (`pspautotests/demos/cube.iso`, 60 fps on a software GPU) |
 | Tekken 6 | Not tried yet: needs your own dump |
@@ -61,10 +67,9 @@ and PPSSPP won't start.
    menus and in a fight. PPSSPP's compat list already sets `RequireDefaultCPUClock` and
    `ForceMax60FPS` for it.
 2. If it's slow: profile with Chrome DevTools, then
-   - re-enable SSE paths through Wasm SIMD (`-msse4.1`, fix the few x86-only spots),
    - tune the IR passes for the hottest blocks,
    - later, a JIT that compiles PSP code to WebAssembly modules.
-3. FFmpeg for cutscenes (currently off), SDL3_ttf, an AudioWorklet for audio, gamepad mapping checks.
+3. SDL3_ttf, an AudioWorklet for audio, gamepad mapping checks.
 
 ## Runtime
 

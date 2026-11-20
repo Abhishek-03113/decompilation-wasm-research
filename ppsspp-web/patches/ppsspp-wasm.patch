@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 88a67ae..0d70b24 100644
+index 88a67ae..e5b69ae 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -27,7 +27,10 @@ if(FORCED_CPU)
@@ -52,8 +52,8 @@ index 88a67ae..0d70b24 100644
  
 +if(EMSCRIPTEN)
 +	message("Generating for WebAssembly, ${CMAKE_BUILD_TYPE}")
-+	# SSE intrinsics stay off for now (portable C++ paths); -msimd128 still lets clang auto-vectorize.
-+	add_compile_options(-msimd128 -pthread)
++	# Emscripten translates SSE up to 4.1 into Wasm SIMD, so PPSSPP's SSE paths run as SIMD too.
++	add_compile_options(-msimd128 -msse4.1 -pthread)
 +	add_compile_definitions(NO_MMAP)
 +	add_link_options(-pthread)
 +endif()
@@ -208,6 +208,58 @@ index c50255e..deaec26 100644
  #include <thread>
  #include <cstring>
  
+diff --git a/Core/HW/Camera.cpp b/Core/HW/Camera.cpp
+index 48d7c77..5835203 100644
+--- a/Core/HW/Camera.cpp
++++ b/Core/HW/Camera.cpp
+@@ -15,6 +15,7 @@
+ // Official git repository and contact information can be found at
+ // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
+ #include "ppsspp_config.h"
++#include <cstdlib>
+ #include "Camera.h"
+ #include "Core/Config.h"
+ 
+diff --git a/Core/MIPS/MIPS.cpp b/Core/MIPS/MIPS.cpp
+index c624a97..e63d7a0 100644
+--- a/Core/MIPS/MIPS.cpp
++++ b/Core/MIPS/MIPS.cpp
+@@ -96,7 +96,7 @@ static inline void ARM32WriteFPSCR(u32 fpscr) {
+ // to read the register. Our bits are cleared in it, in case a JIT's asm stub had already set them.
+ // Only the CPU thread calls these.
+ static bool g_hostModeSaved = false;
+-#if PPSSPP_ARCH(SSE2)
++#if PPSSPP_ARCH(SSE2) && !defined(__EMSCRIPTEN__)
+ static u32 g_savedHostMode;
+ #elif PPSSPP_ARCH(ARM64)
+ static u64 g_savedHostMode;
+@@ -113,7 +113,7 @@ void ApplyHostRoundingMode(const MIPSState *mips) {
+ 	}
+ 	int rmode = fcr1Bits & 3;
+ 	bool ftz = (fcr1Bits & 0x01000000) != 0;
+-#if PPSSPP_ARCH(SSE2)
++#if PPSSPP_ARCH(SSE2) && !defined(__EMSCRIPTEN__)
+ 	if (!g_hostModeSaved) {
+ 		g_savedHostMode = _mm_getcsr() & ~0xE040;
+ 		g_hostModeSaved = true;
+@@ -163,7 +163,7 @@ void ApplyHostRoundingMode(const MIPSState *mips) {
+ void RestoreHostRoundingMode(bool force) {
+ 	if (!g_hostModeSaved) {
+ 		if (force) {
+-#if PPSSPP_ARCH(SSE2)
++#if PPSSPP_ARCH(SSE2) && !defined(__EMSCRIPTEN__)
+ 			_mm_setcsr(_mm_getcsr() & ~0xE040);
+ #elif PPSSPP_ARCH(ARM64)
+ 			ARM64WriteFPCR(ARM64ReadFPCR() & ~(7 << 22));
+@@ -176,7 +176,7 @@ void RestoreHostRoundingMode(bool force) {
+ 		return;
+ 	}
+ 	g_hostModeSaved = false;
+-#if PPSSPP_ARCH(SSE2)
++#if PPSSPP_ARCH(SSE2) && !defined(__EMSCRIPTEN__)
+ 	_mm_setcsr(g_savedHostMode);
+ #elif PPSSPP_ARCH(ARM64)
+ 	ARM64WriteFPCR(g_savedHostMode);
 diff --git a/Core/Util/PathUtil.cpp b/Core/Util/PathUtil.cpp
 index caa91ba..974aa8e 100644
 --- a/Core/Util/PathUtil.cpp
@@ -436,6 +488,19 @@ index 39f943e..7ebc22c 100644
  	list(APPEND aemu_postoffice_server_obj
  		aemu_postoffice/server_cpp/native_socket_linux.cpp
  	)
+diff --git a/ext/at3_standalone/atrac3plusdsp.cpp b/ext/at3_standalone/atrac3plusdsp.cpp
+index c920eb0..8704295 100644
+--- a/ext/at3_standalone/atrac3plusdsp.cpp
++++ b/ext/at3_standalone/atrac3plusdsp.cpp
+@@ -27,7 +27,7 @@
+ 
+ #include "ppsspp_config.h"
+ 
+-#if PPSSPP_ARCH(X86) || PPSSPP_ARCH(AMD64)
++#if PPSSPP_ARCH(SSE2)
+ 
+ #include <emmintrin.h>
+ 
 diff --git a/headless/Headless.cpp b/headless/Headless.cpp
 index cc9ba43..d968fd2 100644
 --- a/headless/Headless.cpp
@@ -471,3 +536,17 @@ index 61b733c..8ffd948 100644
      #define PPSSPP_ARCH_X86 1
      #define PPSSPP_ARCH_32BIT 1
      #define PPSSPP_ARCH_SSE2 1
+diff --git a/ext/jpge/jpgd.cpp b/ext/jpge/jpgd.cpp
+index 61487d1..f7aa92a 100644
+--- a/ext/jpge/jpgd.cpp
++++ b/ext/jpge/jpgd.cpp
+@@ -35,6 +35,9 @@
+ #pragma warning (disable : 4611) // warning C4611: interaction between '_setjmp' and C++ object destruction is non-portable
+ #endif
+ 
++#if !defined(JPGD_USE_SSE2) && defined(__EMSCRIPTEN__)
++#define JPGD_USE_SSE2 (0)
++#endif
+ #ifndef JPGD_USE_SSE2
+ 
+ 	#if defined(__GNUC__)
