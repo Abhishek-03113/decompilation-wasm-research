@@ -19,7 +19,9 @@ if [ ! -d emsdk ]; then
   git clone --depth 1 https://github.com/emscripten-core/emsdk.git
   (cd emsdk && ./emsdk install latest && ./emsdk activate latest)
 fi
-. "$WORK/emsdk/emsdk_env.sh" >/dev/null
+# emsdk_env.sh can only find itself under sh/dash when sourced from inside its own folder.
+cd "$WORK/emsdk" && . ./emsdk_env.sh >/dev/null && cd "$WORK"
+command -v emcmake >/dev/null || { echo "emsdk_env.sh did not set up Emscripten" >&2; exit 1; }
 
 # 2. SDL3 from git. Emscripten's port would download a release archive instead; this also works
 #    behind proxies that block archive downloads.
