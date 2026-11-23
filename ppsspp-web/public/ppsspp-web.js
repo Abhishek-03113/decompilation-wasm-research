@@ -320,7 +320,10 @@ async function start() {
     $('stage').classList.add('on')
     $('canvas').focus()
     // No boot file: PPSSPP opens on its game list (memstick ISO/ folder).
+    // For debugging, ?boot=ISO/<file> boots one of the synced games directly.
     const args = ['--memstick=/opfs/memstick']
+    const boot = new URLSearchParams(location.search).get('boot')
+    if (boot && /^[\w .()\[\]/-]+$/.test(boot) && !boot.split('/').includes('..')) args.push('/opfs/memstick/' + boot)
     log('Starting PPSSPP ' + args.join(' '))
     Module.callMain(args)
     await startAudio(Module)
