@@ -107,12 +107,13 @@ class DownloadPool {
     this.waiting = []
     for (let i = 0; i < size; i++) this.idle.push(new Worker('sync-worker.js'))
   }
-  async run(job, onBytes) {
+  async run(job, onBytes, onPiece) {
     const worker = this.idle.pop() || await new Promise((r) => this.waiting.push(r))
     try {
       await new Promise((resolve, reject) => {
         worker.onmessage = ({ data }) => {
           if (data.bytes) onBytes(data.bytes)
+          else if (data.pieceDone !== undefined) onPiece && onPiece(data.pieceDone)
           else data.done ? resolve() : reject(new Error(data.error))
         }
         worker.onerror = (e) => reject(new Error(e.message || 'sync worker failed'))
@@ -188,8 +189,13 @@ async function syncGames() {
       const dir = await dirFor(memstick, parts.slice(0, -1), true)
       const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true })
       const have = await localSize(handle)
-      if (sameVersion && have === f.size) { known.done = true; continue }
-      todo.push({ f, handle, offset: sameVersion && have < f.size ? have : 0 })
+      // A file in several pieces is given its full size before the pieces arrive (in parallel, in
+      // any order), so its size says nothing; its finished pieces are listed in `known.pieces`.
+      const multi = f.parts && f.parts.length > 1
+      if (sameVersion && have === f.size && !known.pieces) { known.done = true; continue }
+      todo.push({ f, handle,
+        offset: !multi && sameVersion && have < f.size ? have : 0,
+        donePieces: multi && sameVersion && known.pieces ? known.pieces.slice() : [] })
     }
 
     const keep = new Set(manifest.files.map((f) => f.path))
@@ -207,7 +213,10 @@ async function syncGames() {
       const persisted = await navigator.storage.persist()
       if (!persisted) log('Browser storage is best-effort here; the browser may clear it when space runs low.')
     }
-    const total = todo.reduce((n, t) => n + t.f.size - t.offset, 0)
+    const remaining = (t) => t.donePieces.length
+      ? t.f.size - t.donePieces.reduce((n, i) => n + t.f.parts[i].size, 0)
+      : t.f.size - t.offset
+    const total = todo.reduce((n, t) => n + remaining(t), 0)
     let done = 0, files = 0, failed = null
     bar.hidden = false
     // Save progress every few seconds rather than after every file: with thousands of files,
@@ -236,16 +245,21 @@ async function syncGames() {
     const lane = async () => {
       while (queue.length && !failed) {
         const t = queue.shift()
-        state[t.f.path] = { size: t.f.size, mtime: t.f.mtime }   // `done` is added once it's complete
+        // `done` is added once it's complete; a file in pieces also lists its finished pieces.
+        const entry = state[t.f.path] = { size: t.f.size, mtime: t.f.mtime }
+        if (t.f.parts && t.f.parts.length > 1) entry.pieces = t.donePieces.slice()
         const url = gamesBase + 'memstick/' + t.f.path.split('/').map(encodeURIComponent).join('/')
         try {
           await pool.run({ parts: ['memstick', ...t.f.path.split('/')], url, size: t.f.size, offset: t.offset,
-            headers: authHeaders(), pieces: t.f.parts }, (n) => { done += n; showProgress() })
+            headers: authHeaders(), pieces: t.f.parts, donePieces: t.donePieces },
+            (n) => { done += n; showProgress() },
+            (i) => { entry.pieces.push(i); saveState(false) })
         } catch (e) {
           failed = e
           break
         }
-        state[t.f.path].done = true
+        entry.done = true
+        delete entry.pieces
         files++
         showProgress()
         if (t.f.size >= 8 * 1024 * 1024) log('Downloaded ' + t.f.path + ' (' + formatSize(t.f.size) + ')')
