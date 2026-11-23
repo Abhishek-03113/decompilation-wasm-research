@@ -132,6 +132,23 @@ and PPSSPP won't start.
    - later, a JIT that compiles PSP code to WebAssembly modules.
 3. SDL3_ttf for nicer UI text.
 
+## Mapping a game's code (`tools/psp_map.py`)
+
+Builds a map of a PSP game from its *decrypted* executable: module info, every imported system
+function (named from PPSSPP's HLE tables), functions found from call instructions, strings, C++ class
+names recovered from RTTI, and the disc's files. Its output is derived from the game: keep it out of
+git and don't share it.
+
+1. Dump the decrypted executable: in PPSSPP (desktop, or this web build via the game's
+   `PSP/SYSTEM/<GAMEID>_ppsspp.ini` with `[General]` `DumpFileTypes = 1`), boot the game once. It lands in
+   `PSP/SYSTEM/DUMP/<GAMEID>_EBOOT.BIN`.
+2. `pip install capstone pycdlib`, then
+   `python3 -I tools/psp_map.py <GAMEID>_EBOOT.BIN <ppsspp source dir> <out dir> [game.iso]`.
+
+For decompiled C, load the same file into Ghidra with the
+[ghidra-allegrex](https://github.com/kotcrab/ghidra-allegrex) processor module (it also decodes the
+Allegrex VFPU vector instructions that a plain MIPS disassembler can't).
+
 ## Runtime
 
 - **Server:** Bun 1.4 (`Bun.serve` in `server.ts`, no dependencies). It sets COOP/COEP/CORP on every
@@ -147,6 +164,8 @@ and PPSSPP won't start.
 - `tools/server-sync.js <memstick-dir>`: first visit, repeat visit, then server-side delete and change; screenshots the game list.
 - `tools/boot-game.js ISO/<file> [outdir] [seconds] [keys]`: boots a server game directly with `?boot=`,
   presses keys on a schedule (e.g. `'[[15,"z"],[40,"Space"]]'`), saves a screenshot and the stats every 5 s, and the console log.
+- `tools/psp_map.py`: map of a PSP game's code and disc (see above).
+- `tools/vercel-branch.sh`: puts the static web build (no games) on the `vercel-web` branch for Vercel.
 - `tools/smoke2.js`: opens the PPSSPP menu and prints frame counters.
 - `tools/input-audio.js`: checks the menu reacts to the simulated pad and the stats overlay.
 - `tools/stacks.js`: pauses every worker and prints its call stack (build with `WASM_DEBUG=ON`).
