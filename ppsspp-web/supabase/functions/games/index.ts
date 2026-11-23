@@ -8,6 +8,13 @@
 // or, if that isn't set, the one whose SHA-256 is in public.ppsspp_settings ('games_key_sha256'), a
 // table with row-level security and no policies, so only this function's service role reads it.
 //
+// Remote packs: remote/<name>.json in the bucket (not synced) describes files players download
+// straight from their official source, e.g. a texture pack on GitHub:
+//   { "base": "https://raw.githubusercontent.com/<owner>/<repo>/<commit>/", "dest": "PSP/TEXTURES/<GAMEID>/",
+//     "version": "<commit>", "files": [["path/in/repo.ktx2", size], ...] }
+// They're listed as files under `dest` with a link to base + path; bucket files under the same
+// `dest` are left out so the two never mix.
+//
 // Deploy with JWT verification off: the function checks the games key itself.
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
@@ -88,15 +95,35 @@ function synced(path: string): boolean {
   })
 }
 
+interface RemotePack { base: string; dest: string; version: string; files: [string, number][] }
+let remoteCache: { packs: RemotePack[]; at: number } | null = null
+
+async function remotePacks(): Promise<RemotePack[]> {
+  if (remoteCache && Date.now() - remoteCache.at < 10 * 60_000) return remoteCache.packs
+  const { data, error } = await sb.storage.from(BUCKET).list('remote', { limit: 100 })
+  if (error) throw error
+  const packs: RemotePack[] = []
+  for (const e of data) {
+    if (!e.name.endsWith('.json')) continue
+    const { data: blob, error: err } = await sb.storage.from(BUCKET).download(`remote/${e.name}`)
+    if (err) throw err
+    const p = JSON.parse(await blob.text()) as RemotePack
+    if (p.base?.startsWith('https://') && p.dest?.endsWith('/') && Array.isArray(p.files)) packs.push(p)
+  }
+  remoteCache = { packs, at: Date.now() }
+  return packs
+}
+
 async function manifest() {
   const objs: Obj[] = []
   for (const { dir } of SYNCED) await walk(dir, objs)
+  const packs = await remotePacks()
   // Join <name>.partNNN into one file with ordered parts.
   const files = new Map<string, { path: string; size: number; mtime: number; parts: Obj[] }>()
   for (const o of objs) {
     const m = /^(.*)\.part(\d{3})$/.exec(o.path)
     const path = m ? m[1] : o.path
-    if (!synced(path)) continue
+    if (!synced(path) || packs.some((p) => path.startsWith(p.dest))) continue
     const f = files.get(path) ?? { path, size: 0, mtime: 0, parts: [] }
     f.parts.push(o)
     f.size += o.size
@@ -111,12 +138,22 @@ async function manifest() {
     if (error) throw error
     for (const s of data) if (s.signedUrl && s.path) signed.set(s.path, s.signedUrl)
   }
+  const remote = packs.flatMap((p) => {
+    const mtime = parseInt(p.version.slice(0, 8), 16) || 1
+    return p.files
+      .map(([rel, size]) => ({ path: p.dest + rel, size, mtime,
+        parts: [{ url: p.base + rel.split('/').map(encodeURIComponent).join('/'), size }] }))
+      .filter((f) => synced(f.path))
+  })
   return {
     dirs: SYNCED,
-    files: list.map((f) => ({
-      path: f.path, size: f.size, mtime: f.mtime,
-      parts: f.parts.map((p) => ({ url: signed.get(p.path), size: p.size })),
-    })),
+    files: [
+      ...list.map((f) => ({
+        path: f.path, size: f.size, mtime: f.mtime,
+        parts: f.parts.map((p) => ({ url: signed.get(p.path), size: p.size })),
+      })),
+      ...remote,
+    ].sort((a, b) => a.path.localeCompare(b.path)),
   }
 }
 

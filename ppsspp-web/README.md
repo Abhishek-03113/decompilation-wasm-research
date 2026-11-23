@@ -156,6 +156,22 @@ as `memstick/` (`ISO/`, `PSP/GAME/`, `PSP/TEXTURES/`, `PSP/SYSTEM/<GAMEID>_ppssp
 Your own `server.ts` can serve games the same way: `GAMES_KEY=... ALLOWED_ORIGINS=<app origin> bun start`,
 and `GAMES_SERVER=<its https URL>` for `tools/vercel-branch.sh`.
 
+## Texture packs from GitHub (`tools/remote_pack.py`)
+
+A pack published on GitHub (for Tekken 6, [Kharij's HD Texture Pack](https://github.com/kharij/Tekken-6-HD-Texture-Pack),
+whose author distributes it only on GitHub and the PPSSPP forums) is served to players straight from
+GitHub instead of from our bucket. `python3 -I tools/remote_pack.py <clone> ULUS10466 out.json` lists
+its files and sizes, pinned to the clone's commit; upload the JSON to the bucket as
+`remote/<name>.json` and the games function lists every file under `PSP/TEXTURES/<GAMEID>/` with a
+`raw.githubusercontent.com` link (CORS and Range supported). A remote pack replaces anything in the
+bucket for the same game folder. The page downloads with six reusable workers.
+
+Downloads are cached in each player's browser storage: a file is fetched again only when the
+server's copy changes. Finished files are marked done and the whole list is fingerprinted, so a
+return visit to an unchanged server checks nothing per file (about 4 s to ready with 8,651 files,
+and no downloads). Clearing site data, or the browser evicting storage when the disk is nearly
+full, means downloading again; the page asks for persistent storage to make eviction unlikely.
+
 ## HD texture packs (`tools/texture_pack.py`)
 
 PPSSPP replaces a game's textures with files from `PSP/TEXTURES/<GAMEID>/` (or a `textures.zip`
@@ -206,6 +222,7 @@ Allegrex VFPU vector instructions that a plain MIPS disassembler can't).
 - `tools/server-sync.js <memstick-dir>`: first visit, repeat visit, then server-side delete and change; screenshots the game list.
 - `tools/boot-game.js ISO/<file> [outdir] [seconds] [keys]`: boots a server game directly with `?boot=`,
   presses keys on a schedule (e.g. `'[[15,"z"],[40,"Space"]]'`), saves a screenshot and the stats every 5 s, and the console log.
+- `tools/remote_pack.py`: list a GitHub-hosted texture pack for players to download from GitHub (see above).
 - `tools/texture_pack.py`: HD texture pack from dumped textures with Real-ESRGAN (see above).
 - `tools/psp_map.py`: map of a PSP game's code and disc as JSON and CSV (see above).
 - `tools/vercel-branch.sh`: puts the static web build (no games) on the `vercel-web` branch for Vercel.
