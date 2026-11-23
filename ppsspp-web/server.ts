@@ -87,6 +87,12 @@ function serveFile(req: Request, filePath: string, cacheControl: string): Respon
   const headers: Record<string, string> = { ...isolationHeaders, 'Cache-Control': cacheControl, 'Accept-Ranges': 'bytes' }
   const type = contentType(filePath)
   if (type) headers['Content-Type'] = type
+  // With no-cache the browser asks before reusing its copy; the ETag makes that a cheap 304.
+  const etag = `"${file.size.toString(36)}-${Math.floor(file.lastModified).toString(36)}"`
+  headers['ETag'] = etag
+  if (req.headers.get('if-none-match') === etag && !req.headers.get('range')) {
+    return new Response(null, { status: 304, headers })
+  }
 
   const range = req.headers.get('range')
   const m = range && /^bytes=(\d*)-(\d*)$/.exec(range.trim())
@@ -130,8 +136,9 @@ const server = Bun.serve({
     const filePath = inside(publicDir, rel)
     if (!filePath) return textResponse(403, 'Forbidden')
     if (!(await Bun.file(filePath).exists())) return textResponse(404, 'Not found')
-    // The page and loader change with every build; the large binaries can be cached for a while.
-    return serveFile(req, filePath, /\.(html|js)$/.test(filePath) ? 'no-cache' : 'public, max-age=3600')
+    // Always revalidate: PPSSPPSDL.js and PPSSPPSDL.wasm must come from the same build. A .wasm
+    // cached from an earlier build next to a new .js fails with "ASM_CONSTS[...] is not a function".
+    return serveFile(req, filePath, 'no-cache')
   },
 })
 

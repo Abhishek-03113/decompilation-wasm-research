@@ -170,7 +170,7 @@ function loadRuntime() {
     window.Module = {
       canvas: $('canvas'),
       print: (t) => { console.log(t); log(t) },
-      printErr: (t) => { console.warn(t); if (!/mprotect|Heap resize/.test(t)) log(t) },
+      printErr: (t) => { console.warn(t); if (!/mprotect|Heap resize|CreateDir|Registered VFS/.test(t)) log(t) },
       locateFile: (p) => 'build/' + p,
       preRun: [() => {
         // HOME is where PPSSPP's file browser opens; /opfs/games is then one click away.
@@ -256,6 +256,7 @@ function readStats(Module) {
     const dt = (now - lastCounts.t) / 1000
     s.pageHz = (counts.page - lastCounts.page) / dt
     s.emuHz = (counts.emu - lastCounts.emu) / dt
+    s.drawnHz = (counts.drawn - lastCounts.drawn) / dt
   }
   lastCounts = counts
   if (audio && audio.ring) {
@@ -272,14 +273,33 @@ function formatStats(s) {
   const lines = []
   if (s.inGame) lines.push(`Game: ${s.fps.toFixed(0)} fps · speed ${s.speed.toFixed(0)}% (${s.vps.toFixed(1)} vblanks/s)`)
   else lines.push('Game: not running (menu)')
-  if (s.emuHz !== undefined) lines.push(`Threads: page ${s.pageHz.toFixed(0)} Hz · emulator ${s.emuHz.toFixed(0)} Hz`)
+  if (s.emuHz !== undefined) lines.push(`Threads: page ${s.pageHz.toFixed(0)} Hz · emulator ${s.emuHz.toFixed(0)} Hz · drawn ${s.drawnHz.toFixed(0)} Hz`)
   if (s.audioMs !== undefined) lines.push(`Audio: ${s.audioMs.toFixed(0)} ms buffered · ${s.underruns} silent frames`)
   lines.push(`Gamepad: ${s.pad}`)
   return lines.join('\n')
 }
 
+// What the WebGL side looks like, for bug reports. getContext returns the context PPSSPP created.
+function graphicsReport() {
+  const c = $('canvas')
+  const lines = [`Canvas: ${c.width}x${c.height} drawn at ${c.clientWidth}x${c.clientHeight} css px, devicePixelRatio ${devicePixelRatio}`]
+  const gl = c.getContext('webgl2')
+  if (!gl) return lines.concat('WebGL 2: no context on the canvas').join('\n')
+  const info = gl.getExtension('WEBGL_debug_renderer_info')
+  lines.push(`WebGL 2: ${info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)}` +
+    ` · ${gl.isContextLost() ? 'CONTEXT LOST' : 'context ok'}`)
+  const a = gl.getContextAttributes()
+  if (a) lines.push(`Context: antialias ${a.antialias} · alpha ${a.alpha} · preserveDrawingBuffer ${a.preserveDrawingBuffer} · ${a.powerPreference}`)
+  return lines.join('\n')
+}
+
 function startStats(Module) {
   const box = $('stats')
+  // A lost WebGL context (GPU reset, driver crash, out of GPU memory) leaves a black canvas.
+  $('canvas').addEventListener('webglcontextlost', () => {
+    log('WebGL context lost: the GPU process reset or ran out of memory. Reload the page.')
+    box.hidden = false
+  })
   const tick = () => { box.textContent = formatStats(readStats(Module)) }
   tick()
   statsTimer = setInterval(tick, 500)
@@ -287,7 +307,9 @@ function startStats(Module) {
     if (e.code === 'F2') { box.hidden = !box.hidden; e.preventDefault() }
   }, true)
   $('copy-stats').addEventListener('click', async () => {
-    const report = formatStats(readStats(Module)) + '\n' + navigator.userAgent
+    const recent = logEl.textContent.trim().split('\n').slice(-40).join('\n')
+    const report = formatStats(readStats(Module)) + '\n' + graphicsReport() + '\n' + navigator.userAgent +
+      '\n--- last log lines ---\n' + recent
     try { await navigator.clipboard.writeText(report); $('copy-stats').textContent = 'Copied' }
     catch { log(report); $('copy-stats').textContent = 'Copied to log' }
     setTimeout(() => { $('copy-stats').textContent = 'Copy stats' }, 1500)
