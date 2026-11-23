@@ -3,8 +3,10 @@
 // Games live on the server, in a PSP memory stick layout (MEMSTICK_DIR, default ./memstick):
 //   memstick/ISO/       disc images (.iso, .cso, .chd): PPSSPP's Games tab
 //   memstick/PSP/GAME/  homebrew: PPSSPP's Homebrew & Demos tab
-// The page syncs these two folders into the browser's private storage and boots straight into
-// PPSSPP's game list. Players can't add their own files. Saves stay in each player's browser.
+//   memstick/PSP/TEXTURES/<GAMEID>/  texture replacement packs (HD textures)
+//   memstick/PSP/SYSTEM/<GAMEID>_ppsspp.ini  per-game settings (graphics etc.) for every player
+// The page syncs these into the browser's private storage and boots straight into PPSSPP's game
+// list. Players can't add their own files. Saves and global settings stay in each player's browser.
 //
 // PPSSPP runs on several threads, which in a browser needs SharedArrayBuffer, which browsers only
 // allow on cross-origin isolated pages: every response carries COOP and COEP headers. Browsers
@@ -19,8 +21,24 @@ const port = Number(process.env.PORT) || 8080
 const publicDir = join(import.meta.dir, 'public')
 const memstickDir = normalize(process.env.MEMSTICK_DIR || join(import.meta.dir, 'memstick'))
 
-// Only these memory stick folders go to players. Saves, settings and the rest stay per player.
-const SYNCED_DIRS = ['ISO', join('PSP', 'GAME')]
+// Only these memory stick folders go to players. Saves, global settings and the rest stay per
+// player. A folder with a pattern syncs only the files directly in it whose names match.
+interface SyncedDir { dir: string; pattern?: RegExp }
+const SYNCED: SyncedDir[] = [
+  { dir: 'ISO' },
+  { dir: 'PSP/GAME' },
+  { dir: 'PSP/TEXTURES' },
+  { dir: 'PSP/SYSTEM', pattern: /^[A-Z0-9]{9}_ppsspp\.ini$/ },   // e.g. ULUS10466_ppsspp.ini
+]
+
+// Whether a memory stick path (with / separators) is one players may download.
+function isSynced(rel: string): boolean {
+  return SYNCED.some(({ dir, pattern }) => {
+    if (!rel.startsWith(dir + '/')) return false
+    const rest = rel.slice(dir.length + 1)
+    return pattern ? !rest.includes('/') && pattern.test(rest) : true
+  })
+}
 
 const isolationHeaders = {
   'Cross-Origin-Opener-Policy': 'same-origin',
@@ -53,7 +71,7 @@ function inside(root: string, rel: string): string | null {
 
 interface ManifestFile { path: string; size: number; mtime: number }
 
-async function walk(dir: string, out: ManifestFile[]) {
+async function walk(dir: string, out: ManifestFile[], pattern?: RegExp) {
   let entries
   try {
     entries = await readdir(dir, { withFileTypes: true })
@@ -64,8 +82,8 @@ async function walk(dir: string, out: ManifestFile[]) {
     if (e.name.startsWith('.')) continue
     const full = join(dir, e.name)
     if (e.isDirectory()) {
-      await walk(full, out)
-    } else if (e.isFile()) {
+      if (!pattern) await walk(full, out)
+    } else if (e.isFile() && (!pattern || pattern.test(e.name))) {
       const st = await stat(full)
       out.push({ path: relative(memstickDir, full).split(sep).join('/'), size: st.size, mtime: Math.floor(st.mtimeMs) })
     }
@@ -74,9 +92,10 @@ async function walk(dir: string, out: ManifestFile[]) {
 
 async function manifest(): Promise<Response> {
   const files: ManifestFile[] = []
-  for (const d of SYNCED_DIRS) await walk(join(memstickDir, d), files)
+  for (const { dir, pattern } of SYNCED) await walk(join(memstickDir, ...dir.split('/')), files, pattern)
   files.sort((a, b) => a.path.localeCompare(b.path))
-  return new Response(JSON.stringify({ dirs: SYNCED_DIRS.map((d) => d.split(sep).join('/')), files }), {
+  const dirs = SYNCED.map(({ dir, pattern }) => ({ dir, pattern: pattern ? pattern.source : null }))
+  return new Response(JSON.stringify({ dirs, files }), {
     headers: { ...isolationHeaders, 'Content-Type': contentTypes['.json'], 'Cache-Control': 'no-store' },
   })
 }
@@ -125,9 +144,10 @@ const server = Bun.serve({
     if (pathname.startsWith('/memstick/')) {
       const rel = pathname.slice('/memstick/'.length)
       // Only files in the synced folders are served; nothing else on the memory stick is public.
-      if (!SYNCED_DIRS.some((d) => rel.startsWith(d.split(sep).join('/') + '/'))) return textResponse(404, 'Not found')
       const filePath = inside(memstickDir, rel)
       if (!filePath) return textResponse(403, 'Forbidden')
+      // Check the resolved path, so "PSP/GAME/..%2FSAVEDATA/..." can't step out of a synced folder.
+      if (!isSynced(relative(memstickDir, filePath).split(sep).join('/'))) return textResponse(404, 'Not found')
       if (!(await Bun.file(filePath).exists())) return textResponse(404, 'Not found')
       return serveFile(req, filePath, 'no-cache')
     }
@@ -143,4 +163,4 @@ const server = Bun.serve({
 })
 
 console.log(`PPSSPP web runtime: http://localhost:${server.port}`)
-console.log(`Games from ${memstickDir} (${SYNCED_DIRS.join(', ')})`)
+console.log(`Games from ${memstickDir} (${SYNCED.map((d) => d.dir + (d.pattern ? '/' + d.pattern.source : '')).join(', ')})`)

@@ -76,12 +76,14 @@ async function localSize(fileHandle) {
 }
 
 // Removes files under `dir` (relative path `prefix`) that aren't in `keep`.
-async function prune(dir, prefix, keep) {
+// With a pattern, only files directly in `dir` whose names match are the server's to remove
+// (PSP/SYSTEM holds the player's own settings next to the server's per-game ones).
+async function prune(dir, prefix, keep, pattern) {
   for await (const [name, handle] of dir.entries()) {
     const rel = prefix + name
     if (handle.kind === 'directory') {
-      await prune(handle, rel + '/', keep)
-    } else if (!keep.has(rel)) {
+      if (!pattern) await prune(handle, rel + '/', keep)
+    } else if (!keep.has(rel) && (!pattern || pattern.test(name))) {
       await dir.removeEntry(name)
       log('Removed ' + rel + ' (no longer on the server)')
     }
@@ -126,8 +128,9 @@ async function syncGames() {
   }
 
   const keep = new Set(manifest.files.map((f) => f.path))
-  for (const d of manifest.dirs) {
-    try { await prune(await dirFor(memstick, d.split('/'), false), d + '/', keep) } catch { /* folder absent */ }
+  for (const { dir, pattern } of manifest.dirs) {
+    const re = pattern ? new RegExp(pattern) : null
+    try { await prune(await dirFor(memstick, dir.split('/'), false), dir + '/', keep, re) } catch { /* folder absent */ }
   }
   for (const k of Object.keys(state)) if (!keep.has(k)) delete state[k]
 
