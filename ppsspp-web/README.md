@@ -132,6 +132,27 @@ and PPSSPP won't start.
    - later, a JIT that compiles PSP code to WebAssembly modules.
 3. SDL3_ttf for nicer UI text.
 
+## Hosting: app on Vercel, games in a private Supabase bucket
+
+The app (`public/` + `public/build/`) is static, so it runs on Vercel
+(`tools/vercel-branch.sh` puts it on the `vercel-web` branch with the COOP/COEP headers). Games never
+go to Vercel. They live in a **private** Supabase Storage bucket, `ppsspp-games`, in the same layout
+as `memstick/` (`ISO/`, `PSP/GAME/`, `PSP/TEXTURES/`, `PSP/SYSTEM/<GAMEID>_ppsspp.ini`).
+
+- The free plan caps files at 50 MB, so big files are stored as `<name>.part000`, `.part001`, ...
+  (`split -b 48M -d -a 3 game.iso game.iso.part`). Free also means 1 GB storage and ~10 GB of
+  downloads a month for the whole organisation: roughly 6 to 12 full downloads of an 816 MB game.
+- The Edge Function `supabase/functions/games` (deployed with JWT verification off) checks the games
+  key (`Authorization: Bearer <GAMES_KEY>`, an Edge Function secret) and returns the manifest with
+  6-hour signed links for each part. Only the Vercel origin and `http://localhost:8080` may call it
+  from a browser.
+- The page asks players for the key once, downloads the parts straight from Storage and joins them in
+  browser storage. Build the Vercel branch with
+  `MANIFEST_URL=https://<project>.supabase.co/functions/v1/games sh tools/vercel-branch.sh`.
+
+Your own `server.ts` can serve games the same way: `GAMES_KEY=... ALLOWED_ORIGINS=<app origin> bun start`,
+and `GAMES_SERVER=<its https URL>` for `tools/vercel-branch.sh`.
+
 ## Mapping a game's code (`tools/psp_map.py`)
 
 Builds a map of a PSP game from its *decrypted* executable: module info, every imported system

@@ -1,8 +1,11 @@
 #!/bin/sh
 # Puts the built web page (public/ plus public/build/) on the `vercel-web` branch, as a static site
-# Vercel can serve: vercel.json adds the COOP/COEP headers PPSSPP's threads need, and an empty
-# memstick/manifest.json means "no games". No game files are ever included.
-#   sh tools/vercel-branch.sh          (after build.sh; then push the branch)
+# Vercel can serve: vercel.json adds the COOP/COEP headers PPSSPP's threads need. No game files are
+# ever included. Where the games come from:
+#   MANIFEST_URL=https://<project>.supabase.co/functions/v1/games   a private Supabase bucket
+#   GAMES_SERVER=https://...                                       your own server.ts
+#   neither: an empty memstick/manifest.json ("no games")
+#   MANIFEST_URL=... sh tools/vercel-branch.sh          (after build.sh; then push the branch)
 set -eu
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 REPO=$(git -C "$HERE" rev-parse --show-toplevel)
@@ -23,6 +26,11 @@ find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 cp "$HERE"/public/*.html "$HERE"/public/*.js .
 mkdir -p build memstick
 cp "$HERE"/public/build/PPSSPPSDL.js "$HERE"/public/build/PPSSPPSDL.wasm "$HERE"/public/build/PPSSPPSDL.data build/
+if [ -n "${MANIFEST_URL:-}" ]; then
+  printf '{"manifestUrl": "%s"}\n' "$MANIFEST_URL" > config.json
+elif [ -n "${GAMES_SERVER:-}" ]; then
+  printf '{"gamesServer": "%s"}\n' "$GAMES_SERVER" > config.json
+fi
 printf '{"dirs":[],"files":[]}\n' > memstick/manifest.json
 cat > vercel.json <<'EOF'
 {
