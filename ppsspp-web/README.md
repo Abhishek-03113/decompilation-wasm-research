@@ -143,9 +143,12 @@ as `memstick/` (`ISO/`, `PSP/GAME/`, `PSP/TEXTURES/`, `PSP/SYSTEM/<GAMEID>_ppssp
   (`split -b 48M -d -a 3 game.iso game.iso.part`). Free also means 1 GB storage and ~10 GB of
   downloads a month for the whole organisation: roughly 6 to 12 full downloads of an 816 MB game.
 - The Edge Function `supabase/functions/games` (deployed with JWT verification off) checks the games
-  key (`Authorization: Bearer <GAMES_KEY>`, an Edge Function secret) and returns the manifest with
+  key (`Authorization: Bearer <key>`) and returns the manifest with
   6-hour signed links for each part. Only the Vercel origin and `http://localhost:8080` may call it
-  from a browser.
+  from a browser. The key is the `GAMES_KEY` Edge Function secret, or, if that isn't set, the key whose
+  SHA-256 is stored in `public.ppsspp_settings` (row `games_key_sha256`; row-level security on, no
+  policies, so only the function reads it). To change the key without the dashboard:
+  `update public.ppsspp_settings set value = encode(sha256('<new key>'), 'hex') where name = 'games_key_sha256';`
 - The page asks players for the key once, downloads the parts straight from Storage and joins them in
   browser storage. Build the Vercel branch with
   `MANIFEST_URL=https://<project>.supabase.co/functions/v1/games sh tools/vercel-branch.sh`.

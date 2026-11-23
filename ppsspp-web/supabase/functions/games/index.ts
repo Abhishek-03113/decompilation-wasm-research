@@ -3,8 +3,10 @@
 // The bucket (ppsspp-games) holds a PSP memory stick layout: ISO/, PSP/GAME/, PSP/TEXTURES/ and
 // PSP/SYSTEM/<GAMEID>_ppsspp.ini. Files bigger than the plan's upload limit are stored as parts
 // (<name>.part000, .part001, ...) and listed here as one file. Players send the games key
-// (Authorization: Bearer <GAMES_KEY>, an Edge Function secret); they get the same manifest the
-// Bun server serves, with short-lived signed download links instead of paths.
+// (Authorization: Bearer <key>); they get the same manifest the Bun server serves, with
+// short-lived signed download links instead of paths. The key is the GAMES_KEY Edge Function secret
+// or, if that isn't set, the one whose SHA-256 is in public.ppsspp_settings ('games_key_sha256'), a
+// table with row-level security and no policies, so only this function's service role reads it.
 //
 // Deploy with JWT verification off: the function checks the games key itself.
 import { createClient } from 'jsr:@supabase/supabase-js@2'
@@ -41,6 +43,26 @@ function sameText(a: string, b: string): boolean {
   let d = 0
   for (let i = 0; i < x.length; i++) d |= x[i] ^ y[i]
   return d === 0
+}
+
+async function sha256(text: string): Promise<string> {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+let storedHash: { value: string; at: number } | null = null
+
+// true / false, or null when no key is configured at all.
+async function keyOk(given: string): Promise<boolean | null> {
+  const secret = Deno.env.get('GAMES_KEY') || ''
+  if (secret) return sameText(given, secret)
+  if (!storedHash || Date.now() - storedHash.at > 60_000) {
+    const { data, error } = await sb.from('ppsspp_settings').select('value').eq('name', 'games_key_sha256').maybeSingle()
+    if (error) throw error
+    storedHash = { value: data?.value ?? '', at: Date.now() }
+  }
+  if (!storedHash.value) return null
+  return sameText(await sha256(given), storedHash.value)
 }
 
 interface Obj { path: string; size: number; mtime: number }
@@ -101,11 +123,11 @@ async function manifest() {
 Deno.serve(async (req) => {
   const headers = cors(req)
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers })
-  const key = Deno.env.get('GAMES_KEY') || ''
-  if (!key) return new Response('GAMES_KEY is not set', { status: 503, headers })
   const given = /^Bearer (.+)$/.exec(req.headers.get('authorization') || '')?.[1] || ''
-  if (!sameText(given, key)) return new Response('This server needs a key', { status: 401, headers })
   try {
+    const ok = await keyOk(given)
+    if (ok === null) return new Response('No games key is configured', { status: 503, headers })
+    if (!ok) return new Response('This server needs a key', { status: 401, headers })
     return new Response(JSON.stringify(await manifest()), {
       headers: { ...headers, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
     })
