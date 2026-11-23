@@ -91,7 +91,9 @@ async function prune(dir, prefix, keep, pattern) {
 }
 
 // Runs the download in sync-worker.js, which writes the file in place (see there for why).
-function downloadFile(parts, url, size, offset, onBytes) {
+// `pieces` ([{url, size}]) comes from a manifest whose files are stored as signed-link parts.
+function downloadFile(parts, url, size, offset, pieces, onBytes) {
+  const headers = authHeaders()
   return new Promise((resolve, reject) => {
     const worker = new Worker('sync-worker.js')
     worker.onmessage = ({ data }) => {
@@ -99,14 +101,46 @@ function downloadFile(parts, url, size, offset, onBytes) {
       else { worker.terminate(); data.done ? resolve() : reject(new Error(data.error)) }
     }
     worker.onerror = (e) => { worker.terminate(); reject(new Error(e.message || 'sync worker failed')) }
-    worker.postMessage({ parts, url, size, offset })
+    worker.postMessage({ parts, url, size, offset, headers, pieces })
   })
 }
+
+// Where the games come from: this site by default, or what config.json names, e.g. when this page
+// is hosted on Vercel:
+//   {"gamesServer": "https://..."}   another server running server.ts (paths under memstick/)
+//   {"manifestUrl": "https://..."}   any endpoint returning the manifest with download links per
+//                                     file (supabase/functions/games: a private Storage bucket)
+// A games source with a key asks for it once; it's kept in this browser.
+const KEY_ITEM = 'ppsspp-games-key'
+let gamesBase = ''
+let manifestUrl = ''
+
+async function loadConfig() {
+  try {
+    const res = await fetch('config.json', { cache: 'no-store' })
+    if (!res.ok) return
+    const cfg = await res.json()
+    if (cfg.gamesServer) gamesBase = String(cfg.gamesServer).replace(/\/*$/, '/')
+    if (cfg.manifestUrl) manifestUrl = String(cfg.manifestUrl)
+  } catch { /* no config: games come from this site */ }
+}
+
+function gamesKey() {
+  try { return localStorage.getItem(KEY_ITEM) || '' } catch { return '' }
+}
+
+function authHeaders() {
+  const key = gamesKey()
+  return key ? { Authorization: 'Bearer ' + key } : {}
+}
+
+class NeedsKey extends Error {}
 
 async function syncGames() {
   const label = $('sync-label')
   const bar = $('sync-bar')
-  const res = await fetch('memstick/manifest.json', { cache: 'no-store' })
+  const res = await fetch(manifestUrl || gamesBase + 'memstick/manifest.json', { cache: 'no-store', headers: authHeaders() })
+  if (res.status === 401) throw new NeedsKey(gamesKey() ? 'That key was not accepted.' : '')
   if (!res.ok) throw new Error('memstick/manifest.json: HTTP ' + res.status)
   const manifest = await res.json()
   const root = await navigator.storage.getDirectory()
@@ -148,8 +182,8 @@ async function syncGames() {
       state[t.f.path] = { size: t.f.size, mtime: t.f.mtime }
       await writeJson(root, SYNC_STATE, state)
       label.textContent = `Downloading ${t.f.path}${t.offset ? ' (resuming)' : ''}…`
-      const url = 'memstick/' + t.f.path.split('/').map(encodeURIComponent).join('/')
-      await downloadFile(['memstick', ...t.f.path.split('/')], url, t.f.size, t.offset, (n) => {
+      const url = gamesBase + 'memstick/' + t.f.path.split('/').map(encodeURIComponent).join('/')
+      await downloadFile(['memstick', ...t.f.path.split('/')], url, t.f.size, t.offset, t.f.parts, (n) => {
         done += n
         bar.value = total ? done / total : 1
         label.textContent = `Downloading ${t.f.path}: ${formatSize(done)} of ${formatSize(total)}`
@@ -360,8 +394,29 @@ $('reload').addEventListener('click', () => location.reload())
 
 const ok = runChecks()
 if (!ok) log('Some browser features are missing; PPSSPP may not start.')
-if (navigator.storage && navigator.storage.getDirectory) {
+function sync() {
+  $('key-form').hidden = true
   syncGames()
     .then(() => { $('start').disabled = false; $('start').focus() })
-    .catch((e) => { $('sync-label').textContent = 'Could not get the games: ' + e.message; log(e.stack || e.message) })
+    .catch((e) => {
+      if (e instanceof NeedsKey) {
+        $('sync-label').textContent = (e.message ? e.message + ' ' : '') + 'The games on this server need a key from its owner.'
+        $('key-form').hidden = false
+        $('key').focus()
+        return
+      }
+      $('sync-label').textContent = 'Could not get the games: ' + e.message
+      log(e.stack || e.message)
+    })
+}
+
+$('key-form').addEventListener('submit', (e) => {
+  e.preventDefault()
+  try { localStorage.setItem(KEY_ITEM, $('key').value.trim()) } catch { log('This browser blocks local storage; the key can\'t be kept.') }
+  $('key').value = ''
+  sync()
+})
+
+if (navigator.storage && navigator.storage.getDirectory) {
+  loadConfig().then(sync)
 }
