@@ -41,9 +41,15 @@ if [ ! -d ppsspp ]; then
     git submodule update --init --depth 1 "$m"
   done
   (cd ext/armips && git submodule update --init --depth 1)
-  git apply "$HERE/patches/ppsspp-wasm.patch"
-  (cd ext/aemu_postoffice && git apply "$HERE/patches/aemu_postoffice-wasm.patch")
   cd ..
+fi
+# (Re)apply our patches whenever they change, so a `git pull` here reaches an existing work dir.
+PATCH_SUM=$(cat "$HERE/patches/ppsspp-wasm.patch" "$HERE/patches/aemu_postoffice-wasm.patch" | cksum)
+if [ "$(cat ppsspp/.web-patches 2>/dev/null)" != "$PATCH_SUM" ]; then
+  echo "Applying patches/"
+  (cd ppsspp && git checkout -q -- . && git apply "$HERE/patches/ppsspp-wasm.patch")
+  (cd ppsspp/ext/aemu_postoffice && git checkout -q -- . && git apply "$HERE/patches/aemu_postoffice-wasm.patch")
+  echo "$PATCH_SUM" > ppsspp/.web-patches
 fi
 
 # 4. Configure and build the SDL frontend for WebAssembly.
