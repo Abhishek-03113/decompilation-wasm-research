@@ -164,7 +164,7 @@ GitHub instead of from our bucket. `python3 -I tools/remote_pack.py <clone> ULUS
 its files and sizes, pinned to the clone's commit; upload the JSON to the bucket as
 `remote/<name>.json` and the games function lists every file under `PSP/TEXTURES/<GAMEID>/` with a
 `raw.githubusercontent.com` link (CORS and Range supported). A remote pack replaces anything in the
-bucket for the same game folder. The page downloads with six reusable workers.
+bucket for the same game folder. The page downloads with 24 parallel worker threads for packs of many small files (measured: 110 s for the 524 MB Tekken pack, against 207 s with 6 and 175 s with 48), 4 for big files.
 
 Downloads are cached in each player's browser storage: a file is fetched again only when the
 server's copy changes. Finished files are marked done and the whole list is fingerprinted, so a

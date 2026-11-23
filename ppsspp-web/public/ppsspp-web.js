@@ -225,7 +225,13 @@ async function syncGames() {
       bar.value = total ? done / total : 1
       label.textContent = `Downloading: ${formatSize(done)} of ${formatSize(total)} (${files} of ${todo.length} files)`
     }
-    const pool = new DownloadPool(todo.length > 8 ? 6 : 1)
+    // Parallel lanes, each a worker thread with its own file. Many small files (a texture pack)
+    // are latency-bound, and HTTP/2 carries many requests at once, so they get more lanes; a few
+    // big files are bandwidth-bound and need fewer. ?lanes=N overrides this for measuring.
+    const avg = total / todo.length
+    const asked = parseInt(new URLSearchParams(location.search).get('lanes'), 10)
+    const lanes = Math.max(1, Math.min(todo.length, asked > 0 ? Math.min(asked, 64) : avg < 4 * 1024 * 1024 ? 24 : 4))
+    const pool = new DownloadPool(lanes)
     const queue = todo.slice()
     const lane = async () => {
       while (queue.length && !failed) {
@@ -246,11 +252,11 @@ async function syncGames() {
         await saveState(false)
       }
     }
-    await Promise.all(Array.from({ length: Math.min(6, todo.length) }, lane))
+    await Promise.all(Array.from({ length: lanes }, lane))
     pool.close()
     await saveState(true)
     if (failed) throw failed
-    if (todo.length > 1) log(`Downloaded ${todo.length} files (${formatSize(total)})`)
+    if (todo.length > 1) log(`Downloaded ${todo.length} files (${formatSize(total)}) with ${lanes} parallel downloads`)
     bar.hidden = true
   }
   if (allDone()) state[FINGERPRINT] = fingerprint
