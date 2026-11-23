@@ -107,6 +107,9 @@ function serveFile(req: Request, filePath: string, cacheControl: string): Respon
 
 const server = Bun.serve({
   port,
+  // Bun drops a connection after 10 s without traffic by default; a browser busy writing a big
+  // game file to disk can pause reading for longer than that.
+  idleTimeout: 120,
   async fetch(req) {
     const url = new URL(req.url)
     const pathname = decodeURIComponent(url.pathname)

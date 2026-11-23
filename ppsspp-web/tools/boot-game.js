@@ -1,34 +1,30 @@
-// Boots one server game directly (?boot=) in headless Chromium, screenshots it every few seconds
-// and keeps PPSSPP's console output, to see how far a game gets.
-//   node tools/boot-game.js ISO/<file> [outdir] [seconds] [extra query, e.g. "&x=1"]
+// Boots one server game directly (?boot=) in headless Chromium, presses keys on a schedule and saves
+// a screenshot plus the stats overlay every 5 s, and the console log, to see how far a game gets.
+//   node tools/boot-game.js ISO/<file> [outdir] [seconds] [keys as [[second, key], ...]]
 // (server must be running on :8080; needs Playwright)
 const { chromium } = require('playwright')
 const fs = require('node:fs')
-const path = require('node:path')
-const game = process.argv[2], outDir = process.argv[3] || '.', seconds = +(process.argv[4] || 90)
-const extra = process.argv[5] || ''
-
+const [game, outDir, seconds, plan] = [process.argv[2], process.argv[3] || '.', +(process.argv[4] || 90), JSON.parse(process.argv[5] || '[]')]
 ;(async () => {
   fs.mkdirSync(outDir, { recursive: true })
   const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader', '--autoplay-policy=no-user-gesture-required'] })
   const page = await browser.newPage({ viewport: { width: 960, height: 544 } })
-  const lines = []
-  const t0 = Date.now()
-  const stamp = () => ((Date.now() - t0) / 1000).toFixed(1).padStart(6)
-  page.on('console', (m) => lines.push(`${stamp()} ${m.type()}: ${m.text()}`))
-  page.on('pageerror', (e) => lines.push(`${stamp()} pageerror: ${e.message}`))
-  await page.goto('http://localhost:8080/?boot=' + encodeURIComponent(game) + extra)
+  const lines = []; const t0 = Date.now(); const st = () => ((Date.now() - t0) / 1000).toFixed(1)
+  page.on('console', (m) => lines.push(`${st()} ${m.text()}`))
+  await page.goto('http://localhost:8080/?boot=' + encodeURIComponent(game))
   await page.waitForFunction(() => !document.querySelector('#start').disabled, null, { timeout: 600000 })
-  lines.push(`${stamp()} synced: ${await page.textContent('#sync-label')}`)
-  await page.click('#start')
-  await page.evaluate(() => { document.querySelector('#stats').hidden = false })
-  for (let s = 5; s <= seconds; s += 5) {
-    await page.waitForTimeout(5000)
-    await page.screenshot({ path: path.join(outDir, `t${String(s).padStart(3, '0')}.png`) })
-    lines.push(`${stamp()} stats: ${(await page.textContent('#stats')).replace(/\n/g, ' | ')}`)
+  await page.click('#start'); const g0 = Date.now(); await page.evaluate(() => { document.querySelector('#stats').hidden = false })
+  const todo = plan.slice()
+  for (let s = 0; s <= seconds; s++) {
+    const now = (Date.now() - g0) / 1000
+    while (todo.length && todo[0][0] <= now) { const [, k] = todo.shift(); await page.keyboard.down(k); await page.waitForTimeout(120); await page.keyboard.up(k); lines.push(`${st()} PRESS ${k}`) }
+    if (s % 5 === 0) {
+      lines.push(st() + ' STATS ' + (await page.textContent('#stats')).replace(/\n/g, ' | '))
+      await page.screenshot({ path: `${outDir}/t${String(s).padStart(3, '0')}.png` })
+    }
+    await page.waitForTimeout(Math.max(0, g0 + (s + 1) * 1000 - Date.now()))
   }
-  fs.writeFileSync(path.join(outDir, 'console.log'), lines.join('\n') + '\n')
-  console.log(lines.filter((l) => !/stats:/.test(l)).slice(-60).join('\n'))
-  console.log(lines.filter((l) => /stats:/.test(l)).join('\n'))
+  fs.writeFileSync(outDir + '/console.log', lines.join('\n') + '\n')
+  console.log(lines.filter((l) => /STATS|PRESS|stopped|Abort/.test(l)).join('\n'))
   await browser.close()
 })()

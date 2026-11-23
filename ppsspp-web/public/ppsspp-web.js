@@ -48,11 +48,12 @@ function runChecks() {
 // --- Syncing games from the server ----------------------------------------------------------
 // The server lists its memory stick's ISO/ and PSP/GAME/ folders in memstick/manifest.json. Each
 // file is copied into OPFS at memstick/<path> once, and again only if the server's copy changes.
-// Downloads are written in 64 MB pieces that are saved as they go, so a closed tab resumes where
+// Downloads are written in place by a worker and saved every 64 MB, so a closed tab resumes where
 // it stopped. Files removed on the server are removed here. Saves and settings are never touched.
 
-const SYNC_STATE = '.sync-state.json'   // at the OPFS root, outside the memory stick
-const PIECE = 64 * 1024 * 1024
+// At the OPFS root, outside the memory stick. v2: files written by the old writable-stream sync
+// could be incomplete after an interrupted download, so every browser downloads them once more.
+const SYNC_STATE = '.sync-state-v2.json'
 
 async function readJson(dir, name) {
   try { return JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text()) } catch { return {} }
@@ -87,36 +88,17 @@ async function prune(dir, prefix, keep) {
   }
 }
 
-async function downloadFile(fileHandle, url, size, offset, onBytes) {
-  const headers = offset > 0 ? { Range: `bytes=${offset}-` } : {}
-  const res = await fetch(url, { headers, cache: 'no-store' })
-  if (offset > 0 && res.status !== 206) {
-    // The server ignored the range: start over.
-    return downloadFile(fileHandle, url, size, 0, onBytes)
-  }
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`)
-  const reader = res.body.getReader()
-  let pos = offset
-  let writable = await fileHandle.createWritable({ keepExistingData: offset > 0 })
-  if (offset > 0) await writable.seek(offset)
-  else await writable.truncate(0)
-  let inPiece = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    await writable.write(value)
-    pos += value.byteLength
-    inPiece += value.byteLength
-    onBytes(value.byteLength)
-    if (inPiece >= PIECE) {
-      await writable.close()   // saves this piece for good
-      writable = await fileHandle.createWritable({ keepExistingData: true })
-      await writable.seek(pos)
-      inPiece = 0
+// Runs the download in sync-worker.js, which writes the file in place (see there for why).
+function downloadFile(parts, url, size, offset, onBytes) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker('sync-worker.js')
+    worker.onmessage = ({ data }) => {
+      if (data.bytes) onBytes(data.bytes)
+      else { worker.terminate(); data.done ? resolve() : reject(new Error(data.error)) }
     }
-  }
-  await writable.close()
-  if (pos !== size) throw new Error(`${url}: got ${pos} of ${size} bytes`)
+    worker.onerror = (e) => { worker.terminate(); reject(new Error(e.message || 'sync worker failed')) }
+    worker.postMessage({ parts, url, size, offset })
+  })
 }
 
 async function syncGames() {
@@ -128,6 +110,7 @@ async function syncGames() {
   const root = await navigator.storage.getDirectory()
   const memstick = await root.getDirectoryHandle('memstick', { create: true })
   const state = await readJson(root, SYNC_STATE)
+  root.removeEntry('.sync-state.json').catch(() => {})   // v1 state, no longer used
 
   // Work out what to fetch.
   const todo = []
@@ -163,7 +146,7 @@ async function syncGames() {
       await writeJson(root, SYNC_STATE, state)
       label.textContent = `Downloading ${t.f.path}${t.offset ? ' (resuming)' : ''}…`
       const url = 'memstick/' + t.f.path.split('/').map(encodeURIComponent).join('/')
-      await downloadFile(t.handle, url, t.f.size, t.offset, (n) => {
+      await downloadFile(['memstick', ...t.f.path.split('/')], url, t.f.size, t.offset, (n) => {
         done += n
         bar.value = total ? done / total : 1
         label.textContent = `Downloading ${t.f.path}: ${formatSize(done)} of ${formatSize(total)}`
@@ -194,7 +177,13 @@ function loadRuntime() {
         window.Module.ENV.HOME = '/opfs'
       }],
       onRuntimeInitialized: () => resolve(window.Module),
-      onAbort: (what) => { log('Aborted: ' + what); reject(new Error(String(what))) },
+      onAbort: (what) => {
+        log('PPSSPP stopped: ' + what)
+        // After Start the log is hidden behind the game; go back to the launcher so it's visible.
+        $('launcher').hidden = false
+        $('stage').classList.remove('on')
+        reject(new Error(String(what)))
+      },
     }
     const s = document.createElement('script')
     s.src = 'build/PPSSPPSDL.js'

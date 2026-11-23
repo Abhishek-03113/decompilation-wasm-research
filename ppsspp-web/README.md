@@ -30,8 +30,8 @@ Open the page, wait for "1 game ready", press **Start**, and pick the game.
 | `memstick/PSP/GAME/<name>/EBOOT.PBP` | **Homebrew & Demos** tab |
 
 - On each visit the page fetches `memstick/manifest.json` and downloads only new or changed files
-  (by size and modification time), in 64 MB pieces saved as they arrive, so a closed tab resumes.
-  Files you delete on the server are deleted from players' storage too.
+  (by size and modification time). A worker writes each file in place in OPFS and saves every 64 MB,
+  so a closed tab resumes where it stopped. Files you delete on the server are deleted from players' storage too.
 - Players' saves and settings (`PSP/SAVEDATA`, `PSP/SYSTEM`, ...) stay in their own browser and are never
   synced or overwritten. Nothing else on the server's memory stick is served.
 - In PPSSPP, the Games tab is fixed to `ms:/ISO`: no browsing to other folders, no upload, pin, store,
@@ -91,9 +91,10 @@ and PPSSPP won't start.
 | Audio (AudioWorklet) | Consumes audio in real time (2.97 s in ~3 s), ~50 ms buffered, 0 gaps after boot |
 | Simulated DualShock 4 (Chrome's id, standard mapping) | `controller.pbp` reports L, R, Cross, Triangle, Start and Up correctly |
 | Server memstick → OPFS → game list → boot | Works (`cube.iso`: first visit downloads, second downloads nothing, server-side delete/change pruned/re-fetched) |
-| Tekken 6 | Not tried yet: needs your own dump |
+| Tekken 6 (`ULUS-10466`), 23 Nov 2026 | **Plays.** Boots to the autosave notice in ~1 s, then Bandai Namco logo, opening movie (FFmpeg), title, menus, Arcade, VS screen and a full fight with correct graphics; audio streams with no gaps (not listened to). Menus at 100% speed. In fights 35-40% speed here, but this test machine has no GPU (Chromium draws with SwiftShader on 4 shared CPU cores and the page thread is the bottleneck); real numbers need a real GPU. |
+| 816 MB game sync | ~5 s from a local server; a download closed at 304 MB resumes and the stored file matches the server's |
 
-## Bugs fixed on the way (all in `patches/ppsspp-wasm.patch`)
+## Bugs fixed on the way (in `patches/ppsspp-wasm.patch` unless noted)
 
 1. Emscripten was treated as x86, so the x86 JIT would be used. Added a WebAssembly architecture.
 2. `sleep` used `emscripten_sleep`, which needs Asyncify. Pthreads can use `usleep`.
@@ -103,13 +104,21 @@ and PPSSPP won't start.
 4. **Frozen at the intro screen:** browsers report a 0 Hz refresh rate, and the menu frame limiter
    computed `1/0` → a sleep of ~35 minutes. Found by pausing the workers through the Chrome DevTools
    protocol (`tools/stacks.js`).
-5. Browser main loop for the SDL frontend, non-blocking GL replay, OPFS mount, build fixes for
+5. **Big games never finished syncing (page side, `public/`):** each 64 MB piece was saved by closing an
+   OPFS writable stream, and Chrome copies the whole file on every close. For an 816 MB ISO that is
+   gigabytes of copying; the download stalled and Bun closed the idle connection after 10 s. Now a
+   worker (`sync-worker.js`) writes in place with a sync access handle, retries with Range requests,
+   and the server's idle timeout is 120 s. Sync state is now `.sync-state-v2.json`, so every browser
+   downloads its games once more, replacing any incomplete copy the old code left behind.
+6. If PPSSPP aborts after Start, the page goes back to the launcher with the error in the log instead of
+   leaving a black screen.
+7. Browser main loop for the SDL frontend, non-blocking GL replay, OPFS mount, build fixes for
    armips, OpenXR headers, ad hoc networking sockets and missing includes.
 
 ## Next for Tekken 6
 
-1. Load your Tekken 6 dump; turn on **Settings → Graphics → Show FPS counter** and note the speed in
-   menus and in a fight. PPSSPP's compat list already sets `RequireDefaultCPUClock` and
+1. Measure on real hardware (M1 Pro, i5-10500H + GTX 1650): play a fight with the stats overlay on
+   (F2) and send **Copy stats**. PPSSPP's compat list already sets `RequireDefaultCPUClock` and
    `ForceMax60FPS` for it.
 2. If it's slow: profile with Chrome DevTools, then
    - tune the IR passes for the hottest blocks,
@@ -129,6 +138,8 @@ and PPSSPP won't start.
 ## Tools
 
 - `tools/server-sync.js <memstick-dir>`: first visit, repeat visit, then server-side delete and change; screenshots the game list.
+- `tools/boot-game.js ISO/<file> [outdir] [seconds] [keys]`: boots a server game directly with `?boot=`,
+  presses keys on a schedule (e.g. `'[[15,"z"],[40,"Space"]]'`), saves a screenshot and the stats every 5 s, and the console log.
 - `tools/smoke2.js`: opens the PPSSPP menu and prints frame counters.
 - `tools/input-audio.js`: checks the menu reacts to the simulated pad and the stats overlay.
 - `tools/stacks.js`: pauses every worker and prints its call stack (build with `WASM_DEBUG=ON`).
