@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PPSSPP Web</title>
+<style>
+  :root {
+    --bg: #0e1318; --panel: #161d24; --line: #26313c; --fg: #e4eaf0; --muted: #93a3b1;
+    --accent: #5fb4e0; --bad: #f08a80; --ok: #7fd3a0;
+    --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 15px/1.5 var(--sans); }
+  #launcher { max-width: 720px; margin: 0 auto; padding: 40px 16px; display: grid; gap: 20px; }
+  h1 { margin: 0; font-size: 1.8rem; }
+  p { margin: 0; }
+  .muted { color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: grid; gap: 12px; }
+  .panel h2 { margin: 0; font-size: 1rem; }
+  button { font: 600 14px var(--sans); padding: 9px 16px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #0b1218; }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  progress { width: 100%; height: 10px; }
+  .checks { display: grid; gap: 4px; font-family: var(--mono); font-size: 13px; }
+  .checks .ok { color: var(--ok); } .checks .bad { color: var(--bad); }
+  table { border-collapse: collapse; font-size: 13px; }
+  td { padding: 3px 12px 3px 0; } td:first-child { font-family: var(--mono); color: var(--accent); }
+  #log { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; max-height: 180px; overflow: auto; color: var(--muted); }
+  #stage { position: fixed; inset: 0; background: #000; display: none; }
+  #stage.on { display: block; }
+  #canvas { width: 100%; height: 100%; display: block; }
+  #hud { position: fixed; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 2; }
+  #hud button { padding: 5px 10px; font-size: 12px; opacity: .75; }
+  #stats { position: fixed; top: 8px; left: 8px; z-index: 2; margin: 0; padding: 8px 10px; border-radius: 8px;
+    background: rgba(8, 12, 16, .78); color: #d8e4ee; font: 12px/1.45 var(--mono); white-space: pre; pointer-events: none; }
+</style>
+</head>
+<body>
+<main id="launcher">
+  <div>
+    <h1>PPSSPP Web</h1>
+    <p class="muted">The PPSSPP PSP emulator, compiled to WebAssembly. The games come from this server; they are downloaded into your browser's storage once, then start from there.</p>
+  </div>
+
+  <section class="panel" aria-labelledby="h-checks">
+    <h2 id="h-checks">Browser check</h2>
+    <div class="checks" id="checks"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-games">
+    <h2 id="h-games">Games</h2>
+    <p id="sync-label" class="muted">Checking for games…</p>
+    <progress id="sync-bar" max="1" value="0" hidden></progress>
+    <div>
+      <button id="start" class="primary" type="button" disabled>Start</button>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="h-keys">
+    <h2 id="h-keys">Controls</h2>
+    <p class="muted">Keyboard: PPSSPP's default layout.</p>
+    <table>
+      <tr><td>Arrow keys</td><td>D-pad</td></tr>
+      <tr><td>I / J / K / L</td><td>Analog stick up / left / down / right</td></tr>
+      <tr><td>Z / X / A / S</td><td>Cross / Circle / Square / Triangle</td></tr>
+      <tr><td>Q / W</td><td>L / R</td></tr>
+      <tr><td>Space / Enter</td><td>Start / Select</td></tr>
+      <tr><td>Esc</td><td>Pause menu</td></tr>
+      <tr><td>Tab (hold)</td><td>Fast forward</td></tr>
+      <tr><td>F2</td><td>Show or hide the stats overlay</td></tr>
+    </table>
+    <p class="muted">DualShock 4 / DualSense (USB or Bluetooth, in Chrome or Edge): face buttons, D-pad and left stick
+      map one to one; L1 / R1 are L / R; Options is Start, Share / Create is Select; the PS button or L2 opens the pause menu.
+      Press any button once after connecting so the browser exposes the pad. Remap in Settings → Controls.</p>
+  </section>
+
+  <section class="panel" aria-labelledby="h-log">
+    <h2 id="h-log">Log</h2>
+    <div id="log"></div>
+  </section>
+</main>
+
+<div id="stage">
+  <div id="hud">
+    <button id="copy-stats" type="button">Copy stats</button>
+    <button id="fs" type="button">Fullscreen</button>
+    <button id="reload" type="button">Back to launcher</button>
+  </div>
+  <pre id="stats" aria-live="off" hidden></pre>
+  <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+</div>
+
+<script src="ppsspp-web.js"></script>
+</body>
+</html>
