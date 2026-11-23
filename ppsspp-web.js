@@ -54,6 +54,12 @@ function runChecks() {
 // At the OPFS root, outside the memory stick. v2: files written by the old writable-stream sync
 // could be incomplete after an interrupted download, so every browser downloads them once more.
 const SYNC_STATE = '.sync-state-v2.json'
+const FINGERPRINT = '#manifest'   // key in the sync state: fingerprint of the last fully synced list
+
+async function sha256Hex(text) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return Array.from(new Uint8Array(d), (b) => b.toString(16).padStart(2, '0')).join('')
+}
 
 async function readJson(dir, name) {
   try { return JSON.parse(await (await (await dir.getFileHandle(name)).getFile()).text()) } catch { return {} }
@@ -91,18 +97,33 @@ async function prune(dir, prefix, keep, pattern) {
 }
 
 // Runs the download in sync-worker.js, which writes the file in place (see there for why).
-// `pieces` ([{url, size}]) comes from a manifest whose files are stored as signed-link parts.
-function downloadFile(parts, url, size, offset, pieces, onBytes) {
-  const headers = authHeaders()
-  return new Promise((resolve, reject) => {
-    const worker = new Worker('sync-worker.js')
-    worker.onmessage = ({ data }) => {
-      if (data.bytes) onBytes(data.bytes)
-      else { worker.terminate(); data.done ? resolve() : reject(new Error(data.error)) }
+// Downloads run in sync-worker.js, which writes each file in place (see there for why). A small
+// pool of workers is reused across files, so a pack of thousands of small files (an HD texture
+// pack fetched from GitHub) doesn't pay for a new worker per file and downloads a few at a time.
+// `pieces` ([{url, size}]) comes from a manifest whose files are stored as parts or remote links.
+class DownloadPool {
+  constructor(size) {
+    this.idle = []
+    this.waiting = []
+    for (let i = 0; i < size; i++) this.idle.push(new Worker('sync-worker.js'))
+  }
+  async run(job, onBytes) {
+    const worker = this.idle.pop() || await new Promise((r) => this.waiting.push(r))
+    try {
+      await new Promise((resolve, reject) => {
+        worker.onmessage = ({ data }) => {
+          if (data.bytes) onBytes(data.bytes)
+          else data.done ? resolve() : reject(new Error(data.error))
+        }
+        worker.onerror = (e) => reject(new Error(e.message || 'sync worker failed'))
+        worker.postMessage(job)
+      })
+    } finally {
+      const next = this.waiting.shift()
+      if (next) next(worker); else this.idle.push(worker)
     }
-    worker.onerror = (e) => { worker.terminate(); reject(new Error(e.message || 'sync worker failed')) }
-    worker.postMessage({ parts, url, size, offset, headers, pieces })
-  })
+  }
+  close() { for (const w of this.idle) w.terminate() }
 }
 
 // Where the games come from: this site by default, or what config.json names, e.g. when this page
@@ -148,25 +169,36 @@ async function syncGames() {
   const state = await readJson(root, SYNC_STATE)
   root.removeEntry('.sync-state.json').catch(() => {})   // v1 state, no longer used
 
-  // Work out what to fetch.
+  // Everything downloaded stays in this browser's storage. A file is fetched again only when the
+  // server's copy changes (size or modification time). Files that finished downloading are marked
+  // `done`, and a fingerprint of the whole list is kept, so a return visit to an unchanged server
+  // skips looking at every file (a texture pack has thousands).
+  const fingerprint = await sha256Hex(JSON.stringify([manifest.dirs, manifest.files.map((f) => [f.path, f.size, f.mtime])]))
+  const allDone = () => manifest.files.every((f) => {
+    const k = state[f.path]
+    return k && k.done && k.size === f.size && k.mtime === f.mtime
+  })
   const todo = []
-  for (const f of manifest.files) {
-    const parts = f.path.split('/')
-    const dir = await dirFor(memstick, parts.slice(0, -1), true)
-    const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true })
-    const have = await localSize(handle)
-    const known = state[f.path]
-    const sameVersion = known && known.size === f.size && known.mtime === f.mtime
-    if (sameVersion && have === f.size) continue
-    todo.push({ f, handle, offset: sameVersion && have < f.size ? have : 0 })
-  }
+  if (state[FINGERPRINT] !== fingerprint || !allDone()) {
+    for (const f of manifest.files) {
+      const known = state[f.path]
+      const sameVersion = known && known.size === f.size && known.mtime === f.mtime
+      if (sameVersion && known.done) continue
+      const parts = f.path.split('/')
+      const dir = await dirFor(memstick, parts.slice(0, -1), true)
+      const handle = await dir.getFileHandle(parts[parts.length - 1], { create: true })
+      const have = await localSize(handle)
+      if (sameVersion && have === f.size) { known.done = true; continue }
+      todo.push({ f, handle, offset: sameVersion && have < f.size ? have : 0 })
+    }
 
-  const keep = new Set(manifest.files.map((f) => f.path))
-  for (const { dir, pattern } of manifest.dirs) {
-    const re = pattern ? new RegExp(pattern) : null
-    try { await prune(await dirFor(memstick, dir.split('/'), false), dir + '/', keep, re) } catch { /* folder absent */ }
+    const keep = new Set(manifest.files.map((f) => f.path))
+    for (const { dir, pattern } of manifest.dirs) {
+      const re = pattern ? new RegExp(pattern) : null
+      try { await prune(await dirFor(memstick, dir.split('/'), false), dir + '/', keep, re) } catch { /* folder absent */ }
+    }
+    for (const k of Object.keys(state)) if (k !== FINGERPRINT && !keep.has(k)) delete state[k]
   }
-  for (const k of Object.keys(state)) if (!keep.has(k)) delete state[k]
 
   const games = manifest.files.filter((f) => f.path.startsWith('ISO/')).length
   const totalSize = manifest.files.reduce((n, f) => n + f.size, 0)
@@ -176,22 +208,52 @@ async function syncGames() {
       if (!persisted) log('Browser storage is best-effort here; the browser may clear it when space runs low.')
     }
     const total = todo.reduce((n, t) => n + t.f.size - t.offset, 0)
-    let done = 0
+    let done = 0, files = 0, failed = null
     bar.hidden = false
-    for (const t of todo) {
-      state[t.f.path] = { size: t.f.size, mtime: t.f.mtime }
+    // Save progress every few seconds rather than after every file: with thousands of files,
+    // rewriting the state each time would cost more than the downloads.
+    let lastSave = 0
+    const saveState = async (force) => {
+      if (!force && performance.now() - lastSave < 3000) return
+      lastSave = performance.now()
       await writeJson(root, SYNC_STATE, state)
-      label.textContent = `Downloading ${t.f.path}${t.offset ? ' (resuming)' : ''}…`
-      const url = gamesBase + 'memstick/' + t.f.path.split('/').map(encodeURIComponent).join('/')
-      await downloadFile(['memstick', ...t.f.path.split('/')], url, t.f.size, t.offset, t.f.parts, (n) => {
-        done += n
-        bar.value = total ? done / total : 1
-        label.textContent = `Downloading ${t.f.path}: ${formatSize(done)} of ${formatSize(total)}`
-      })
-      log('Downloaded ' + t.f.path + ' (' + formatSize(t.f.size) + ')')
     }
+    let lastLabel = 0
+    const showProgress = () => {
+      if (performance.now() - lastLabel < 200) return
+      lastLabel = performance.now()
+      bar.value = total ? done / total : 1
+      label.textContent = `Downloading: ${formatSize(done)} of ${formatSize(total)} (${files} of ${todo.length} files)`
+    }
+    const pool = new DownloadPool(todo.length > 8 ? 6 : 1)
+    const queue = todo.slice()
+    const lane = async () => {
+      while (queue.length && !failed) {
+        const t = queue.shift()
+        state[t.f.path] = { size: t.f.size, mtime: t.f.mtime }   // `done` is added once it's complete
+        const url = gamesBase + 'memstick/' + t.f.path.split('/').map(encodeURIComponent).join('/')
+        try {
+          await pool.run({ parts: ['memstick', ...t.f.path.split('/')], url, size: t.f.size, offset: t.offset,
+            headers: authHeaders(), pieces: t.f.parts }, (n) => { done += n; showProgress() })
+        } catch (e) {
+          failed = e
+          break
+        }
+        state[t.f.path].done = true
+        files++
+        showProgress()
+        if (t.f.size >= 8 * 1024 * 1024) log('Downloaded ' + t.f.path + ' (' + formatSize(t.f.size) + ')')
+        await saveState(false)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(6, todo.length) }, lane))
+    pool.close()
+    await saveState(true)
+    if (failed) throw failed
+    if (todo.length > 1) log(`Downloaded ${todo.length} files (${formatSize(total)})`)
     bar.hidden = true
   }
+  if (allDone()) state[FINGERPRINT] = fingerprint
   await writeJson(root, SYNC_STATE, state)
   label.textContent = games
     ? `${games} game${games === 1 ? '' : 's'} ready (${formatSize(totalSize)} in browser storage).`
