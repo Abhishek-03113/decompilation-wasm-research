@@ -156,6 +156,24 @@ as `memstick/` (`ISO/`, `PSP/GAME/`, `PSP/TEXTURES/`, `PSP/SYSTEM/<GAMEID>_ppssp
 Your own `server.ts` can serve games the same way: `GAMES_KEY=... ALLOWED_ORIGINS=<app origin> bun start`,
 and `GAMES_SERVER=<its https URL>` for `tools/vercel-branch.sh`.
 
+## HD texture packs (`tools/texture_pack.py`)
+
+PPSSPP replaces a game's textures with files from `PSP/TEXTURES/<GAMEID>/` (or a `textures.zip`
+there), matched by hash name. The server and the Supabase bucket sync that folder to players.
+
+1. Dump: set `SaveNewTextures = True` under `[Graphics]` in the game's `PSP/SYSTEM/<GAMEID>_ppsspp.ini`
+   and play; PPSSPP writes `PSP/TEXTURES/<GAMEID>/new/<hash>.png`. (Do this on a test browser profile:
+   the game sync prunes `PSP/TEXTURES` to what the server has, so dumps in a player's browser vanish.)
+2. Upscale: `pip install torch spandrel pillow numpy` (CPU wheels: `--index-url
+   https://download.pytorch.org/whl/cpu`), get Real-ESRGAN weights (e.g. Hugging Face
+   `ai-forever/Real-ESRGAN`, `RealESRGAN_x4.pth`), then
+   `python tools/texture_pack.py <new dir> RealESRGAN_x4.pth <pack dir> [--zip]`.
+   It keeps file names, upscales alpha separately, skips tiny, single-colour and render-target-sized
+   images, and writes `textures.ini`.
+3. Ship: copy the pack into `memstick/PSP/TEXTURES/<GAMEID>/` (and the bucket's `PSP/TEXTURES/...`).
+
+The pack is derived from the game: keep it out of git and only give it to people who own the game.
+
 ## Mapping a game's code (`tools/psp_map.py`)
 
 Builds a map of a PSP game from its *decrypted* executable: module info, every imported system
@@ -188,6 +206,7 @@ Allegrex VFPU vector instructions that a plain MIPS disassembler can't).
 - `tools/server-sync.js <memstick-dir>`: first visit, repeat visit, then server-side delete and change; screenshots the game list.
 - `tools/boot-game.js ISO/<file> [outdir] [seconds] [keys]`: boots a server game directly with `?boot=`,
   presses keys on a schedule (e.g. `'[[15,"z"],[40,"Space"]]'`), saves a screenshot and the stats every 5 s, and the console log.
+- `tools/texture_pack.py`: HD texture pack from dumped textures with Real-ESRGAN (see above).
 - `tools/psp_map.py`: map of a PSP game's code and disc as JSON and CSV (see above).
 - `tools/vercel-branch.sh`: puts the static web build (no games) on the `vercel-web` branch for Vercel.
 - `tools/smoke2.js`: opens the PPSSPP menu and prints frame counters.
