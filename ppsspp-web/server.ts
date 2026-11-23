@@ -14,12 +14,48 @@
 //
 //   bun run server.ts      ->  http://localhost:8080
 
+import { timingSafeEqual } from 'node:crypto'
 import { readdir, stat } from 'node:fs/promises'
 import { join, normalize, relative, sep } from 'node:path'
 
 const port = Number(process.env.PORT) || 8080
 const publicDir = join(import.meta.dir, 'public')
 const memstickDir = normalize(process.env.MEMSTICK_DIR || join(import.meta.dir, 'memstick'))
+
+// Games can be private: with GAMES_KEY set, every /memstick/ request needs
+// "Authorization: Bearer <GAMES_KEY>" (the page asks players for the key once). ALLOWED_ORIGINS lists
+// other sites whose pages may fetch games from here, e.g. the app hosted on Vercel:
+//   GAMES_KEY=... ALLOWED_ORIGINS=https://ppsspp-web-omega.vercel.app bun start
+const gamesKey = process.env.GAMES_KEY || ''
+const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean)
+
+function hasKey(req: Request): boolean {
+  if (!gamesKey) return true
+  const m = /^Bearer (.+)$/.exec(req.headers.get('authorization') || '')
+  const given = Buffer.from(m ? m[1] : '')
+  const want = Buffer.from(gamesKey)
+  return given.length === want.length && timingSafeEqual(given, want)
+}
+
+// CORS for an allowed origin, so its page can read game files (cross-origin, with the key header).
+function corsHeaders(req: Request): Record<string, string> {
+  const origin = req.headers.get('origin')
+  if (!origin || !allowedOrigins.includes(origin)) return {}
+  return {
+    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
+    'Access-Control-Allow-Headers': 'Authorization, Range',
+    'Access-Control-Expose-Headers': 'Content-Range, Content-Length, ETag',
+    'Access-Control-Max-Age': '600',
+    'Cross-Origin-Resource-Policy': 'cross-origin',
+    'Vary': 'Origin',
+  }
+}
+
+function withHeaders(res: Response, extra: Record<string, string>): Response {
+  for (const [k, v] of Object.entries(extra)) res.headers.set(k, v)
+  return res
+}
 
 // Only these memory stick folders go to players. Saves, global settings and the rest stay per
 // player. A folder with a pattern syncs only the files directly in it whose names match.
@@ -130,6 +166,18 @@ function serveFile(req: Request, filePath: string, cacheControl: string): Respon
   return new Response(file, { headers })
 }
 
+async function serveMemstick(req: Request, pathname: string): Promise<Response> {
+  if (pathname === '/memstick/manifest.json') return manifest()
+  const rel = pathname.slice('/memstick/'.length)
+  // Only files in the synced folders are served; nothing else on the memory stick is public.
+  const filePath = inside(memstickDir, rel)
+  if (!filePath) return textResponse(403, 'Forbidden')
+  // Check the resolved path, so "PSP/GAME/..%2FSAVEDATA/..." can't step out of a synced folder.
+  if (!isSynced(relative(memstickDir, filePath).split(sep).join('/'))) return textResponse(404, 'Not found')
+  if (!(await Bun.file(filePath).exists())) return textResponse(404, 'Not found')
+  return serveFile(req, filePath, 'no-cache')
+}
+
 const server = Bun.serve({
   port,
   // Bun drops a connection after 10 s without traffic by default; a browser busy writing a big
@@ -139,17 +187,11 @@ const server = Bun.serve({
     const url = new URL(req.url)
     const pathname = decodeURIComponent(url.pathname)
 
-    if (pathname === '/memstick/manifest.json') return manifest()
-
     if (pathname.startsWith('/memstick/')) {
-      const rel = pathname.slice('/memstick/'.length)
-      // Only files in the synced folders are served; nothing else on the memory stick is public.
-      const filePath = inside(memstickDir, rel)
-      if (!filePath) return textResponse(403, 'Forbidden')
-      // Check the resolved path, so "PSP/GAME/..%2FSAVEDATA/..." can't step out of a synced folder.
-      if (!isSynced(relative(memstickDir, filePath).split(sep).join('/'))) return textResponse(404, 'Not found')
-      if (!(await Bun.file(filePath).exists())) return textResponse(404, 'Not found')
-      return serveFile(req, filePath, 'no-cache')
+      const cors = corsHeaders(req)
+      if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors })
+      if (!hasKey(req)) return withHeaders(textResponse(401, 'This server needs a key'), cors)
+      return withHeaders(await serveMemstick(req, pathname), cors)
     }
 
     const rel = pathname.endsWith('/') ? pathname + 'index.html' : pathname
@@ -163,4 +205,6 @@ const server = Bun.serve({
 })
 
 console.log(`PPSSPP web runtime: http://localhost:${server.port}`)
+if (gamesKey) console.log('Games need a key (GAMES_KEY is set)')
+if (allowedOrigins.length) console.log(`Pages from ${allowedOrigins.join(', ')} may fetch games`)
 console.log(`Games from ${memstickDir} (${SYNCED.map((d) => d.dir + (d.pattern ? '/' + d.pattern.source : '')).join(', ')})`)

@@ -5,7 +5,7 @@ optionally the disc image.
 
     python3 -I tools/psp_map.py <decrypted EBOOT.BIN> <ppsspp source dir> <out dir> [game.iso]
 
-Writes into <out dir>: summary.md, imports.csv, functions.csv, strings.csv, classes.csv and (with an ISO)
+Writes into <out dir>: summary.json, imports.csv, functions.csv, strings.csv, classes.csv and (with an ISO)
 files.csv. Everything it writes is derived from the game: keep it out of git and don't share it.
 Needs: pip install capstone (and pycdlib for the ISO catalogue).
 """
@@ -206,42 +206,27 @@ def main():
         write_csv(os.path.join(out_dir, 'files.csv'), files)
 
     libs = collections.Counter(r['library'] for r in imp)
-    unknown = [r for r in imp if r['known_to_ppsspp'] == 'no']
     code = [f for f in funcs if f['kind'] == 'code']
-    top = sorted(code, key=lambda f: -f['calls'])[:15]
     vaddr, _, filesz, memsz, _ = img.segments[0]
-    lines = [
-        f'# Map of {mi["name"]}', '',
-        f'- Executable: `{os.path.basename(elf)}`, {len(img.data):,} bytes, entry point `0x{img.entry:08X}`',
-        f'- Loaded at `0x{vaddr:08X}`: {filesz:,} bytes from the file, {memsz:,} bytes in memory (the rest is zeroed data)',
-        f'- Module info at `0x{mi["addr"]:08X}`: name `{mi["name"]}`, version {mi["version"] >> 8}.{mi["version"] & 0xFF}, gp `0x{mi["gp"]:08X}`',
-        f'- {len(code):,} functions found from call instructions (functions only reached indirectly, '
-        f'through pointers or jump tables, are not counted)',
-        f'- {undecoded:,} instructions the MIPS disassembler could not decode: Allegrex VFPU vector math, '
-        f'which Ghidra with the ghidra-allegrex plugin decodes',
-        f'- {len(imp)} imported system functions from {len(libs)} libraries; '
-        f'{len(imp) - len(unknown)} have names in PPSSPP\'s tables',
-        f'- {len(strs):,} text strings, including {len(cls)} C++ class names from RTTI (classes.csv)', '',
-        '## Imported libraries', '', '| Library | Functions |', '|---|---|',
-        *[f'| {k} | {v} |' for k, v in libs.most_common()], '',
-        '## Most called functions', '', '| Address | Calls | Size (bytes) |', '|---|---|---|',
-        *[f'| `{f["address"]}` | {f["calls"]} | {f["size"]} |' for f in top], '',
-    ]
     namespaces = collections.Counter('::'.join(c['cls'].split('<')[0].split('::')[:-1]) or '(global)' for c in cls)
-    lines += ['## C++ namespaces (from RTTI class names)', '', '| Namespace | Classes |', '|---|---|',
-              *[f'| `{k}` | {v} |' for k, v in namespaces.most_common(20)], '']
-    if unknown:
-        lines += ['## Imports without a name in PPSSPP', '',
-                  *[f'- {r["library"]} `{r["nid"]}`' for r in unknown], '']
-    if files:
-        by_type = collections.Counter()
-        for r in files:
-            by_type[r['type']] += r['size']
-        lines += ['## Disc files by type', '', '| Type | Files | Size |', '|---|---|---|',
-                  *[f'| {t} | {sum(1 for r in files if r["type"] == t)} | {s / 1048576:.1f} MB |'
-                    for t, s in by_type.most_common()], '']
-    open(os.path.join(out_dir, 'summary.md'), 'w').write('\n'.join(lines))
-    print('\n'.join(lines[:12]))
+    by_type = collections.defaultdict(lambda: [0, 0])
+    for r in files:
+        by_type[r['type']][0] += 1
+        by_type[r['type']][1] += r['size']
+    summary = {
+        'module': mi['name'], 'executable_bytes': len(img.data), 'entry': f'0x{img.entry:08X}',
+        'load_address': f'0x{vaddr:08X}', 'file_bytes': filesz, 'memory_bytes': memsz,
+        'module_info': f'0x{mi["addr"]:08X}', 'module_version': f'{mi["version"] >> 8}.{mi["version"] & 0xFF}',
+        'gp': f'0x{mi["gp"]:08X}', 'functions': len(code), 'undecoded_instructions': undecoded,
+        'imports': len(imp), 'imports_named': sum(r['known_to_ppsspp'] == 'yes' for r in imp),
+        'libraries': dict(libs.most_common()), 'strings': len(strs), 'classes': len(cls),
+        'namespaces': dict(namespaces.most_common()),
+        'top_functions': sorted(code, key=lambda f: -f['calls'])[:25],
+        'disc_by_type': {t: {'files': n, 'bytes': b} for t, (n, b) in sorted(by_type.items(), key=lambda kv: -kv[1][1])},
+    }
+    import json
+    json.dump(summary, open(os.path.join(out_dir, 'summary.json'), 'w'), indent=1)
+    print(json.dumps({k: v for k, v in summary.items() if not isinstance(v, (dict, list))}, indent=1))
 
 
 if __name__ == '__main__':

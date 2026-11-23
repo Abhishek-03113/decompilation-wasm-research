@@ -2,14 +2,14 @@
 // A writable stream (createWritable) would copy the whole file on every save, which for a ~1 GB
 // ISO means gigabytes of copying and a stalled download. Here bytes go straight to their offset,
 // flush() makes them durable every 64 MB, and a dropped connection resumes with a Range request.
-//   in:  { parts: ['memstick', 'ISO', 'x.iso'], url, size, offset }
+//   in:  { parts: ['memstick', 'ISO', 'x.iso'], url, size, offset, headers }
 //   out: { bytes } progress messages, then { done: true } or { error }
 'use strict'
 
 const FLUSH_EVERY = 64 * 1024 * 1024
 const RETRIES = 5
 
-self.onmessage = async ({ data: { parts, url, size, offset } }) => {
+self.onmessage = async ({ data: { parts, url, size, offset, headers = {} } }) => {
   let handle
   try {
     let dir = await navigator.storage.getDirectory()
@@ -21,7 +21,7 @@ self.onmessage = async ({ data: { parts, url, size, offset } }) => {
     let sinceFlush = 0
     for (let attempt = 0; pos < size; attempt++) {
       try {
-        const res = await fetch(url, { headers: pos > 0 ? { Range: `bytes=${pos}-` } : {}, cache: 'no-store' })
+        const res = await fetch(url, { headers: pos > 0 ? { ...headers, Range: `bytes=${pos}-` } : headers, cache: 'no-store' })
         if (pos > 0 && res.status !== 206) { pos = 0; handle.truncate(0) }   // range ignored: start over
         else if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const reader = res.body.getReader()

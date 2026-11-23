@@ -164,7 +164,7 @@ Allegrex VFPU vector instructions that a plain MIPS disassembler can't).
 - `tools/server-sync.js <memstick-dir>`: first visit, repeat visit, then server-side delete and change; screenshots the game list.
 - `tools/boot-game.js ISO/<file> [outdir] [seconds] [keys]`: boots a server game directly with `?boot=`,
   presses keys on a schedule (e.g. `'[[15,"z"],[40,"Space"]]'`), saves a screenshot and the stats every 5 s, and the console log.
-- `tools/psp_map.py`: map of a PSP game's code and disc (see above).
+- `tools/psp_map.py`: map of a PSP game's code and disc as JSON and CSV (see above).
 - `tools/vercel-branch.sh`: puts the static web build (no games) on the `vercel-web` branch for Vercel.
 - `tools/smoke2.js`: opens the PPSSPP menu and prints frame counters.
 - `tools/input-audio.js`: checks the menu reacts to the simulated pad and the stats overlay.

@@ -9,3 +9,4 @@ public/build/
 memstick/*
 !memstick/README.md
 __pycache__/
+public/config.json
