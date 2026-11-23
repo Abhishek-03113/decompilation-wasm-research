@@ -284,6 +284,39 @@ index a14f9c6..724dff0 100644
  	bool IsInSpace(const u8 *ptr) const { return false; }
  };
  #endif
+diff --git a/SDL/SDLGLGraphicsContext.cpp b/SDL/SDLGLGraphicsContext.cpp
+index 16dbac2..42b55b1 100644
+--- a/SDL/SDLGLGraphicsContext.cpp
++++ b/SDL/SDLGLGraphicsContext.cpp
+@@ -474,7 +474,15 @@ bool SDLGLGraphicsContext::InitSurface(WindowSystem winsys, void *data1, void *d
+ 
+ 	// Finally we can do the regular initialization.
+ 	CheckGLExtensions();
++#ifdef __EMSCRIPTEN__
++	// Browsers present WebGL frames in step with requestAnimationFrame. Swap interval 0 (vsync off,
++	// or fast-forward) makes SDL drive the main loop from setTimeout instead, at 100-200 Hz, and
++	// Chrome with a real GPU can then show an empty drawing buffer: a black screen while the game
++	// runs. Offer only FIFO, so the loop stays on requestAnimationFrame; fast-forward skips flips.
++	draw_ = Draw::T3DCreateGLContext(false);
++#else
+ 	draw_ = Draw::T3DCreateGLContext(true);
++#endif
+ 	renderManager_ = (GLRenderManager *)draw_->GetNativeObject(Draw::NativeObject::RENDER_MANAGER);
+ 	renderManager_->SetInflightFrames(g_Config.iInflightFrames);
+ 	SetGPUBackend(GPUBackend::OPENGL);
+@@ -490,10 +498,12 @@ bool SDLGLGraphicsContext::InitSurface(WindowSystem winsys, void *data1, void *d
+ 		SDL_GL_SwapWindow(window_);
+ #endif
+ 	});
++#ifndef __EMSCRIPTEN__
+ 	renderManager_->SetSwapIntervalFunction([&](int interval) {
+ 		INFO_LOG(Log::G3D, "SDL SwapInterval: %d", interval);
+ 		SDL_GL_SetSwapInterval(interval);
+ 	});
++#endif
+ 
+ 	window_ = window;
+ 	return true;
 diff --git a/SDL/SDLGLGraphicsContext.h b/SDL/SDLGLGraphicsContext.h
 index 061ffdc..8bc90b2 100644
 --- a/SDL/SDLGLGraphicsContext.h
