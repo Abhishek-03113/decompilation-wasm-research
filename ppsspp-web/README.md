@@ -110,9 +110,16 @@ and PPSSPP won't start.
    worker (`sync-worker.js`) writes in place with a sync access handle, retries with Range requests,
    and the server's idle timeout is 120 s. Sync state is now `.sync-state-v2.json`, so every browser
    downloads its games once more, replacing any incomplete copy the old code left behind.
-6. If PPSSPP aborts after Start, the page goes back to the launcher with the error in the log instead of
+6. **Black screen on Macs (Chrome and Brave):** SDL asks for an 8-bit alpha channel by default, so the
+   WebGL canvas was translucent, and PPSSPP leaves the backbuffer's alpha at 0. A GPU compositor shows
+   such a canvas as fully transparent (black page behind it); headless Chromium's software compositor
+   still showed the colours, which hid it from the tests. The canvas is now opaque (`SDL_GL_ALPHA_SIZE`
+   0), and `tools/boot-game.js` tests on a white page so a transparent canvas shows up as white.
+   The web build also offers only FIFO presentation, so the main loop always stays on
+   `requestAnimationFrame` (vsync off used to switch it to `setTimeout`).
+7. If PPSSPP aborts after Start, the page goes back to the launcher with the error in the log instead of
    leaving a black screen.
-7. Browser main loop for the SDL frontend, non-blocking GL replay, OPFS mount, build fixes for
+8. Browser main loop for the SDL frontend, non-blocking GL replay, OPFS mount, build fixes for
    armips, OpenXR headers, ad hoc networking sockets and missing includes.
 
 ## Next for Tekken 6

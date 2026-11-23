@@ -13,6 +13,9 @@ const [game, outDir, seconds, plan] = [process.argv[2], process.argv[3] || '.', 
   page.on('console', (m) => lines.push(`${st()} ${m.text()}`))
   await page.goto('http://localhost:8080/?boot=' + encodeURIComponent(game))
   await page.waitForFunction(() => !document.querySelector('#start').disabled, null, { timeout: 600000 })
+  // A white page behind the canvas: a canvas that is transparent (alpha 0) then shows up white
+  // instead of looking right on black, as it did before the opaque-canvas fix.
+  await page.addStyleTag({ content: '#stage { background: #fff !important }' })
   await page.click('#start'); const g0 = Date.now(); await page.evaluate(() => { document.querySelector('#stats').hidden = false })
   const todo = plan.slice()
   for (let s = 0; s <= seconds; s++) {

@@ -358,7 +358,7 @@ index 1dee449..2f82898 100644
  		return NKCODE_BUTTON_10;
  	case SDL_GAMEPAD_BUTTON_BACK:
 diff --git a/SDL/SDLMain.cpp b/SDL/SDLMain.cpp
-index feeae55..526b090 100644
+index feeae55..05317d7 100644
 --- a/SDL/SDLMain.cpp
 +++ b/SDL/SDLMain.cpp
 @@ -1,4 +1,41 @@
@@ -565,7 +565,21 @@ index feeae55..526b090 100644
  	SDL_free(displayIDs);
  
  	// TODO: Should only call this if we actually intend to use OpenGL.
-@@ -2518,7 +2686,7 @@ int main(int argc, char *argv[]) {
+@@ -2181,6 +2349,13 @@ int main(int argc, char *argv[]) {
+ 	SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+ 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+ 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
++#ifdef __EMSCRIPTEN__
++	// SDL asks for an 8-bit alpha channel by default, which on the web makes the canvas itself
++	// translucent. PPSSPP leaves the backbuffer's alpha at 0, so browsers compositing on a real
++	// GPU (Chrome/Brave/Safari on a Mac) showed a fully transparent canvas: a black screen while
++	// the game ran. An opaque canvas has no alpha channel to get wrong.
++	SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
++#endif
+ 
+ 	// Force fullscreen if the resolution is too low to run windowed.
+ 	if (g_DesktopWidth < 480 * 2 && g_DesktopHeight < 272 * 2) {
+@@ -2518,7 +2693,7 @@ int main(int argc, char *argv[]) {
  		}
  	}
  
@@ -574,7 +588,7 @@ index feeae55..526b090 100644
  	// linux SDL_GetPowerInfo asks upower on dbus for power information by default, can cause DrawFPS() in DebugOverlay.cpp to block and affect frame pacing
  	bool stop_battery_poll_thread = false;
  	double last_battery_poll = 0;
-@@ -2576,7 +2744,7 @@ int main(int argc, char *argv[]) {
+@@ -2576,7 +2751,7 @@ int main(int argc, char *argv[]) {
  
  			UpdateTextFocus(window);
  			UpdateSDLCursor();
@@ -583,7 +597,7 @@ index feeae55..526b090 100644
  			kick_battery_poll_thread();
  #endif
  
-@@ -2594,9 +2762,18 @@ int main(int argc, char *argv[]) {
+@@ -2594,9 +2769,18 @@ int main(int argc, char *argv[]) {
  	} else {
  		// OpenGL mode uses this path.
  		std::thread emuThread = EmuThread_Start(graphicsContext, new NativeApplication(), [&](GraphicsContext *graphicsContext){
@@ -602,7 +616,7 @@ index feeae55..526b090 100644
  		while (true) {
  			// OpenGL mode uses this.
  			{
-@@ -2610,7 +2787,7 @@ int main(int argc, char *argv[]) {
+@@ -2610,7 +2794,7 @@ int main(int argc, char *argv[]) {
  
  			UpdateTextFocus(window);
  			UpdateSDLCursor();
@@ -611,7 +625,7 @@ index feeae55..526b090 100644
  			kick_battery_poll_thread();
  #endif
  
-@@ -2638,7 +2815,7 @@ int main(int argc, char *argv[]) {
+@@ -2638,7 +2822,7 @@ int main(int argc, char *argv[]) {
  		EmuThread_Join(graphicsContext, emuThread);
  	}
  
