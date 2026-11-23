@@ -8,3 +8,4 @@ public/build/
 # The server's games (memstick/ISO, memstick/PSP/GAME). Never commit them.
 memstick/*
 !memstick/README.md
+__pycache__/
