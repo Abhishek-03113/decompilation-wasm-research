@@ -3,7 +3,8 @@
 // Games come from the server's memory stick (ISO/ and PSP/GAME/) and are synced into the browser's
 // Origin Private File System (OPFS) under memstick/. The WebAssembly side mounts OPFS at /opfs
 // before main() runs, so PPSSPP's memory stick is /opfs/memstick: the synced games plus this
-// player's own saves and settings. PPSSPP starts on its game list; players can't add files.
+// player's own saves and settings. The page shows the games as a library (titles and art read from
+// each disc's PARAM.SFO, ICON0 and PIC1); picking one boots it directly, skipping PPSSPP's own menu.
 'use strict'
 
 const $ = (id) => document.getElementById(id)
@@ -40,8 +41,10 @@ function runChecks() {
     div.className = ok ? 'ok' : 'bad'
     div.textContent = (ok ? '✓ ' : '✗ ') + name + (ok ? '' : ': ' + fix)
     box.appendChild(div)
+    if (!ok) $('check-fails').appendChild(div.cloneNode(true))
     allOk = allOk && ok
   }
+  $('check-box').hidden = allOk
   return allOk
 }
 
@@ -165,6 +168,7 @@ async function syncGames() {
   if (res.status === 401) throw new NeedsKey(gamesKey() ? 'That key was not accepted.' : '')
   if (!res.ok) throw new Error('memstick/manifest.json: HTTP ' + res.status)
   const manifest = await res.json()
+  showLibrary(manifest)
   const root = await navigator.storage.getDirectory()
   const memstick = await root.getDirectoryHandle('memstick', { create: true })
   const state = await readJson(root, SYNC_STATE)
@@ -206,9 +210,16 @@ async function syncGames() {
     for (const k of Object.keys(state)) if (k !== FINGERPRINT && !keep.has(k)) delete state[k]
   }
 
-  const games = manifest.files.filter((f) => f.path.startsWith('ISO/')).length
+  const games = library.length
   const totalSize = manifest.files.reduce((n, f) => n + f.size, 0)
   if (todo.length) {
+    for (const t of todo) {
+      const g = byPath.get(t.f.path)
+      if (g) {
+        g.pending = true
+        g.got = t.donePieces.length ? t.donePieces.reduce((n, i) => n + t.f.parts[i].size, 0) : t.offset
+      }
+    }
     if (navigator.storage.persist) {
       const persisted = await navigator.storage.persist()
       if (!persisted) log('Browser storage is best-effort here; the browser may clear it when space runs low.')
@@ -231,7 +242,8 @@ async function syncGames() {
     const showProgress = () => {
       if (performance.now() - lastLabel < 200) return
       lastLabel = performance.now()
-      bar.value = total ? done / total : 1
+      bar.firstElementChild.style.width = (total ? done / total * 100 : 100).toFixed(1) + '%'
+      for (const g of library) if (g.pending) setPill(g, 'Downloading ' + Math.floor((g.got || 0) / g.file.size * 100) + '%')
       label.textContent = `Downloading: ${formatSize(done)} of ${formatSize(total)} (${files} of ${todo.length} files)`
     }
     // Parallel lanes, each a worker thread with its own file. Many small files (a texture pack)
@@ -252,7 +264,7 @@ async function syncGames() {
         try {
           await pool.run({ parts: ['memstick', ...t.f.path.split('/')], url, size: t.f.size, offset: t.offset,
             headers: authHeaders(), pieces: t.f.parts, donePieces: t.donePieces },
-            (n) => { done += n; showProgress() },
+            (n) => { done += n; const g = byPath.get(t.f.path); if (g) g.got += n; showProgress() },
             (i) => { entry.pieces.push(i); saveState(false) })
         } catch (e) {
           failed = e
@@ -260,6 +272,8 @@ async function syncGames() {
         }
         entry.done = true
         delete entry.pieces
+        const g = byPath.get(t.f.path)
+        if (g) { g.pending = false; setPill(g, 'Downloaded') }
         files++
         showProgress()
         if (t.f.size >= 8 * 1024 * 1024) log('Downloaded ' + t.f.path + ' (' + formatSize(t.f.size) + ')')
@@ -276,9 +290,222 @@ async function syncGames() {
   if (allDone()) state[FINGERPRINT] = fingerprint
   await writeJson(root, SYNC_STATE, state)
   label.textContent = games
-    ? `${games} game${games === 1 ? '' : 's'} ready (${formatSize(totalSize)} in browser storage).`
-    : 'No games on this server yet. Put ISO, CSO or CHD files in the server\'s memstick/ISO folder.'
+    ? `${games} game${games === 1 ? '' : 's'} ready, ${formatSize(totalSize)} in this browser.`
+    : 'No games on this server yet.'
+  await readLibrary(memstick)
 }
+
+// --- Library --------------------------------------------------------------------------------
+// One card per game: disc images in ISO/ and homebrew in PSP/GAME/<name>/EBOOT.PBP. Until the
+// files are in browser storage a card shows the file name; then its title, game ID and art are
+// read from the disc (ISO 9660, or CSO with each block inflated) or from the PBP's header.
+
+const LAST_ITEM = 'ppsspp-last-game'
+let library = []
+const byPath = new Map()
+
+function gameFiles(manifest) {
+  return manifest.files.filter((f) => /^ISO\/[^/]+\.(iso|cso|chd)$/i.test(f.path) || /^PSP\/GAME\/[^/]+\/EBOOT\.PBP$/i.test(f.path))
+}
+
+function titleFromPath(path) {
+  const parts = path.split('/')
+  const name = /EBOOT\.PBP$/i.test(path) ? parts[parts.length - 2] : parts[parts.length - 1].replace(/\.[^.]+$/, '')
+  return name.replace(/_+/g, ' ')
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag)
+  if (cls) e.className = cls
+  if (text !== undefined) e.textContent = text
+  return e
+}
+
+function setPill(g, text, ready) {
+  g.pill.textContent = text
+  g.pill.classList.toggle('ready', !!ready)
+}
+
+function showLibrary(manifest) {
+  const box = $('games')
+  box.textContent = ''
+  library = []
+  byPath.clear()
+  for (const file of gameFiles(manifest)) {
+    const g = { file, path: file.path, title: titleFromPath(file.path), ready: false, got: 0 }
+    const card = g.card = el('button', 'game')
+    card.type = 'button'
+    card.setAttribute('aria-disabled', 'true')
+    const art = g.art = el('div', 'art')
+    art.appendChild(el('span', 'initial', g.title.charAt(0).toUpperCase()))
+    const play = el('span', 'play')
+    play.innerHTML = '<svg width="12" height="14" viewBox="0 0 12 14" aria-hidden="true"><path d="M2 1.5v11l9-5.5z" fill="#181614"/></svg>'
+    art.appendChild(play)
+    const meta = el('div', 'meta')
+    const row = el('div', 'row')
+    g.name = el('b', '', g.title)
+    g.pill = el('span', 'pill', 'Checking')
+    row.append(g.name, g.pill)
+    g.kind = /EBOOT/i.test(file.path) ? 'Homebrew' : file.path.split('.').pop().toUpperCase()
+    g.sub = el('small', '', g.kind + ' · ' + formatSize(file.size))
+    meta.append(row, g.sub)
+    card.append(art, meta)
+    card.addEventListener('click', () => { if (g.ready) start(g) })
+    box.appendChild(card)
+    library.push(g)
+    byPath.set(file.path, g)
+  }
+  $('library-sub').textContent = library.length
+    ? `${library.length} game${library.length === 1 ? '' : 's'} on this server.`
+    : 'Nothing here yet.'
+  if (!library.length) box.appendChild(el('div', 'empty', 'No games on this server yet. Put ISO, CSO or CHD files in its memstick/ISO folder.'))
+  box.style.display = library.length ? '' : 'block'
+}
+
+// Random access to a disc image. ISO: plain slices. CSO: a block index; each block is raw deflate,
+// or stored when the index entry's top bit is set.
+async function discReader(file) {
+  const raw = async (off, len) => new Uint8Array(await file.slice(off, off + len).arrayBuffer())
+  const head = await raw(0, 24)
+  if (String.fromCharCode(...head.subarray(0, 4)) !== 'CISO') return { read: raw, blob: async (off, len) => file.slice(off, off + len) }
+  const dv = new DataView(head.buffer)
+  const total = Number(dv.getBigUint64(8, true)), bs = dv.getUint32(16, true), align = head[21]
+  const index = new DataView((await raw(24, (Math.ceil(total / bs) + 1) * 4)).buffer)
+  const cache = new Map()
+  const block = async (i) => {
+    if (cache.has(i)) return cache.get(i)
+    const a = index.getUint32(i * 4, true), b = index.getUint32(i * 4 + 4, true)
+    const start = (a & 0x7fffffff) * 2 ** align, end = (b & 0x7fffffff) * 2 ** align
+    let data = await raw(start, end - start)
+    if (!(a & 0x80000000)) {
+      const ds = new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))
+      data = new Uint8Array(await new Response(ds).arrayBuffer())
+    }
+    cache.set(i, data)
+    return data
+  }
+  const read = async (off, len) => {
+    const out = new Uint8Array(len)
+    for (let p = 0; p < len;) {
+      const o = (off + p) % bs
+      const d = await block(Math.floor((off + p) / bs))
+      const n = Math.min(len - p, bs - o)
+      out.set(d.subarray(o, o + n), p)
+      p += n
+    }
+    return out
+  }
+  return { read, blob: async (off, len) => new Blob([await read(off, len)]) }
+}
+
+// Finds a file on an ISO 9660 disc by its folder path: [byte offset, size], or null.
+async function isoFind(disc, path) {
+  const pvd = await disc.read(16 * 2048, 2048)
+  if (String.fromCharCode(...pvd.subarray(1, 6)) !== 'CD001') return null
+  let dv = new DataView(pvd.buffer)
+  let lba = dv.getUint32(156 + 2, true), size = dv.getUint32(156 + 10, true)
+  for (const want of path) {
+    const dir = await disc.read(lba * 2048, Math.min(size, 1 << 20))
+    dv = new DataView(dir.buffer)
+    let found = false
+    for (let p = 0; p + 33 < dir.length;) {
+      const len = dir[p]
+      if (!len) { p = (Math.floor(p / 2048) + 1) * 2048; continue }
+      const name = String.fromCharCode(...dir.subarray(p + 33, p + 33 + dir[p + 32])).replace(/;\d+$/, '')
+      if (name.toUpperCase() === want) {
+        lba = dv.getUint32(p + 2, true); size = dv.getUint32(p + 10, true); found = true
+        break
+      }
+      p += len
+    }
+    if (!found) return null
+  }
+  return [lba * 2048, size]
+}
+
+// PARAM.SFO: a key table and a data table; strings are UTF-8, 0x0404 entries are 32-bit numbers.
+function parseSfo(b) {
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength)
+  if (b.length < 20 || dv.getUint32(0, true) !== 0x46535000) return {}
+  const keys = dv.getUint32(8, true), data = dv.getUint32(12, true), n = dv.getUint32(16, true)
+  const str = (o, len) => new TextDecoder().decode(b.subarray(o, o + len)).replace(/\0[\s\S]*$/, '')
+  const out = {}
+  for (let i = 0; i < n; i++) {
+    const e = 20 + i * 16
+    const key = str(keys + dv.getUint16(e, true), 64)
+    const fmt = dv.getUint16(e + 2, true), len = dv.getUint32(e + 4, true), off = data + dv.getUint32(e + 12, true)
+    out[key] = fmt === 0x0404 ? dv.getUint32(off, true) : str(off, len)
+  }
+  return out
+}
+
+async function gameInfo(file, path) {
+  if (/EBOOT\.PBP$/i.test(path)) {
+    // PBP header: magic, version, then the offsets of PARAM.SFO, ICON0, ICON1, PIC0, PIC1, SND0, PSP, PSAR.
+    const h = new DataView(await file.slice(0, 40).arrayBuffer())
+    if (h.getUint32(0, true) !== 0x50425000) return {}
+    const part = (i) => [h.getUint32(8 + i * 4, true), h.getUint32(12 + i * 4, true) - h.getUint32(8 + i * 4, true)]
+    const [so, sl] = part(0), [io, il] = part(1), [po, pl] = part(4)
+    const sfo = parseSfo(new Uint8Array(await file.slice(so, so + sl).arrayBuffer()))
+    return { sfo, icon: il > 0 ? file.slice(io, io + il) : null, pic: pl > 0 ? file.slice(po, po + pl) : null }
+  }
+  if (/\.chd$/i.test(path)) return {}
+  const disc = await discReader(file)
+  const find = (name) => isoFind(disc, ['PSP_GAME', name])
+  const sfoAt = await find('PARAM.SFO')
+  if (!sfoAt) return {}
+  const sfo = parseSfo(await disc.read(...sfoAt))
+  const iconAt = await find('ICON0.PNG'), picAt = await find('PIC1.PNG')
+  return { sfo, icon: iconAt && await disc.blob(...iconAt), pic: picAt && await disc.blob(...picAt) }
+}
+
+async function readLibrary(memstick) {
+  for (const g of library) {
+    try {
+      const parts = g.path.split('/')
+      const dir = await dirFor(memstick, parts.slice(0, -1), false)
+      const file = await (await dir.getFileHandle(parts[parts.length - 1])).getFile()
+      const { sfo = {}, icon, pic } = await gameInfo(file, g.path)
+      if (sfo.TITLE) { g.title = sfo.TITLE.trim(); g.name.textContent = g.title }
+      if (sfo.DISC_ID) g.sub.textContent = sfo.DISC_ID.replace(/^([A-Z]{4})(\d+)$/, '$1-$2') + ' · ' + formatSize(g.file.size)
+      const hasPic = pic && pic.size > 0
+      if (hasPic) g.art.style.backgroundImage = `url(${URL.createObjectURL(pic)})`
+      if (icon && icon.size > 0) {
+        const i = el('span', 'icon' + (hasPic ? '' : ' alone'))
+        i.style.backgroundImage = `url(${URL.createObjectURL(icon)})`
+        g.art.prepend(i)
+      }
+      if (hasPic || (icon && icon.size > 0)) g.art.querySelector('.initial')?.remove()
+    } catch (e) {
+      log('Could not read the title of ' + g.path + ': ' + e.message)
+    }
+    g.ready = true
+    g.card.setAttribute('aria-disabled', 'false')
+    g.card.setAttribute('aria-label', 'Play ' + g.title)
+    setPill(g, 'Ready', true)
+  }
+  pickFeatured()
+}
+
+// The nav's Play button starts ?boot=<path> when given (tools/boot-game.js), else the last game played.
+// ?menu makes it open PPSSPP's own menu with no game, for the tools that test the menu.
+let featured = null
+function pickFeatured() {
+  const q = new URLSearchParams(location.search)
+  if (q.has('menu')) {
+    featured = { path: '', title: 'PPSSPP menu' }
+    $('start').textContent = 'Open PPSSPP menu'
+    $('start').disabled = false
+    return
+  }
+  const boot = q.get('boot')
+  let last = ''
+  try { last = localStorage.getItem(LAST_ITEM) || '' } catch {}
+  featured = (boot && (byPath.get(boot) || { path: boot, title: boot })) || byPath.get(last) || library[0] || null
+  $('start').textContent = featured ? 'Play ' + featured.title : 'Play'
+  $('start').disabled = !featured
+}
+
 
 // --- Starting PPSSPP ------------------------------------------------------------------------
 
@@ -419,7 +646,17 @@ function startStats(Module) {
     log('WebGL context lost: the GPU process reset or ran out of memory. Reload the page.')
     box.hidden = false
   })
-  const tick = () => { box.textContent = formatStats(readStats(Module)) }
+  // The HUD (Library, Fullscreen, Copy stats) stays out of the way while a game runs. It shows when
+  // the mouse moves, and whenever PPSSPP isn't running the game (its pause menu, or after leaving it).
+  const stage = $('stage')
+  let moved = 0
+  window.addEventListener('mousemove', () => { moved = performance.now() })
+  const tick = () => {
+    const s = readStats(Module)
+    box.textContent = formatStats(s)
+    if (s.inGame) $('booting').hidden = true
+    stage.classList.toggle('chrome', !s.inGame || performance.now() - moved < 2500)
+  }
   tick()
   statsTimer = setInterval(tick, 500)
   window.addEventListener('keydown', (e) => {
@@ -435,9 +672,10 @@ function startStats(Module) {
   })
 }
 
-async function start() {
-  if (started) return
+async function start(game) {
+  if (started || !game) return
   started = true
+  if (game.path) try { localStorage.setItem(LAST_ITEM, game.path) } catch {}
   createAudio()
   try {
     log('Loading PPSSPP…')
@@ -449,11 +687,13 @@ async function start() {
     $('launcher').hidden = true
     $('stage').classList.add('on')
     $('canvas').focus()
-    // No boot file: PPSSPP opens on its game list (memstick ISO/ folder).
-    // For debugging, ?boot=ISO/<file> boots one of the synced games directly.
+    // The game goes on the command line, so PPSSPP boots it directly instead of opening its menu.
     const args = ['--memstick=/opfs/memstick']
-    const boot = new URLSearchParams(location.search).get('boot')
-    if (boot && /^[\w .()\[\]/-]+$/.test(boot) && !boot.split('/').includes('..')) args.push('/opfs/memstick/' + boot)
+    $('booting').hidden = !game.path
+    if (game.path) {
+      if (!/^[\w .()\[\]/-]+$/.test(game.path) || game.path.split('/').includes('..')) throw new Error('Bad game path ' + game.path)
+      args.push('/opfs/memstick/' + game.path)
+    }
     log('Starting PPSSPP ' + args.join(' '))
     Module.callMain(args)
     await startAudio(Module)
@@ -467,7 +707,7 @@ async function start() {
 
 // --- Wiring ---------------------------------------------------------------------------------
 
-$('start').addEventListener('click', () => start())
+$('start').addEventListener('click', () => start(featured))
 $('fs').addEventListener('click', () => {
   const el = $('stage')
   if (el.requestFullscreen) el.requestFullscreen().catch(() => {})
@@ -477,13 +717,15 @@ $('reload').addEventListener('click', () => location.reload())
 const ok = runChecks()
 if (!ok) log('Some browser features are missing; PPSSPP may not start.')
 function sync() {
-  $('key-form').hidden = true
+  $('key-box').hidden = true
   syncGames()
-    .then(() => { $('start').disabled = false; $('start').focus() })
+    .then(() => { if (!$('start').disabled) $('start').focus() })
     .catch((e) => {
       if (e instanceof NeedsKey) {
-        $('sync-label').textContent = (e.message ? e.message + ' ' : '') + 'The games on this server need a key from its owner.'
-        $('key-form').hidden = false
+        $('sync-label').textContent = 'Locked.'
+        $('key-label').innerHTML = '<strong>This library is private.</strong> '
+        $('key-label').append((e.message ? e.message + ' ' : '') + 'Enter the key from its owner.')
+        $('key-box').hidden = false
         $('key').focus()
         return
       }
