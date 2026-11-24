@@ -2,7 +2,8 @@
 
 [PPSSPP](https://github.com/hrydgard/ppsspp) (the PSP emulator) compiled to WebAssembly and served
 by a [Bun](https://bun.sh) server. The **server provides the games**: players open the page, the games are
-downloaded into their browser's storage (OPFS) once, and **Start** boots straight into PPSSPP's game list.
+downloaded into their browser's storage (OPFS) once, and the page shows them as a library (titles and art read from
+each disc). Picking a game boots it directly; PPSSPP's own menu is skipped.
 Players can't add files. First target game: **Tekken 6**.
 
 | PPSSPP's menu in the browser | `cube.iso` booted from browser storage, 60 fps |
@@ -18,7 +19,8 @@ bun install
 bun start            # http://localhost:8080  (bun --watch: bun run dev)
 ```
 
-Open the page, wait for "1 game ready", press **Start**, and pick the game.
+Open the page, wait for the game's card to say **Ready**, and click it (or **Play** in the top bar for the last game
+played). `?menu` opens PPSSPP's own menu instead, with no game; the menu test tools use it.
 
 ### Games on the server
 

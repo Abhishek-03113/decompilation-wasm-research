@@ -11,7 +11,7 @@ const memstick = process.argv[2], outDir = process.argv[3] || '.'
 async function visit(context, label, { start = false } = {}) {
   const page = await context.newPage({ viewport: { width: 960, height: 544 } })
   await page.setViewportSize({ width: 960, height: 544 })
-  await page.goto('http://localhost:8080/')
+  await page.goto('http://localhost:8080/?menu')
   await page.waitForFunction(() => !document.querySelector('#start').disabled, null, { timeout: 60000 })
   const status = await page.textContent('#sync-label')
   const logText = await page.textContent('#log')

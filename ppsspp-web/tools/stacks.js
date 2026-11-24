@@ -3,7 +3,7 @@ const { chromium } = require('playwright')
 ;(async () => {
   const browser = await chromium.launch({ args: ['--enable-unsafe-swiftshader', '--use-angle=swiftshader'] })
   const page = await browser.newPage()
-  await page.goto('http://localhost:8080/')
+  await page.goto('http://localhost:8080/?menu')
   await page.waitForTimeout(800)
   await page.waitForFunction(() => !document.querySelector('#start').disabled, null, { timeout: 60000 })
   await page.click('#start')

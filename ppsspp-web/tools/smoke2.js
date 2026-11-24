@@ -5,7 +5,7 @@ const { chromium } = require('playwright')
   const lines = []
   page.on('console', (m) => lines.push(`[${m.type()}] ${m.text()}`))
   page.on('pageerror', (e) => lines.push(`[pageerror] ${e.message}`))
-  await page.goto('http://localhost:8080/')
+  await page.goto('http://localhost:8080/?menu')
   await page.waitForTimeout(800)
   await page.waitForFunction(() => !document.querySelector('#start').disabled, null, { timeout: 60000 })
   await page.click('#start')

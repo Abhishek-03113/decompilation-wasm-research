@@ -30,7 +30,7 @@ const fakePad = () => {
   const lines = []
   page.on('console', (m) => lines.push(m.text()))
   await page.addInitScript(fakePad)
-  await page.goto('http://localhost:8080/')
+  await page.goto('http://localhost:8080/?menu')
   await page.waitForTimeout(800)
   await page.waitForFunction(() => !document.querySelector('#start').disabled, null, { timeout: 60000 })
   await page.click('#start')
