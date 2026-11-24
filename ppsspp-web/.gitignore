@@ -10,3 +10,4 @@ memstick/*
 !memstick/README.md
 __pycache__/
 public/config.json
+shot.png
